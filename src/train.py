@@ -41,15 +41,7 @@ class config:
     WIDTH  = 100
     ### Set normalization type
     V_NORMALIZE = 'v3'
-    # MEAN = [0.412, 0.200, 0.085] # train.csv
-    # STD = [0.140, 0.236, 0.121] # train.csv
-    # MEAN = [0.446, 0.201, 0.084] # merged_train.csv
-    # STD = [0.134, 0.239, 0.126] # merged_train.csv
-    # MEAN = [0.207, 0.201, 0.504] # merged_train.csv 2nd try
-    # STD = [0.151, 0.239, 0.300] # merged_train.csv 2nd try
     
-    # MEAN = [0.287, 0.187, 0.078] # final_train.csv normal (beta=1)
-    # STD = [0.135, 0.229, 0.122] # final_train.csv normal (beta=1)
     MEAN = [0.182512, 0.187020, 0.507372] # final_train.csv 2nd try
     STD = [0.188272, 0.244794, 0.296535] # final_train.csv 2nd try
     # MEAN = [0.011, 0.187, 0.507]
@@ -156,7 +148,7 @@ data_loader_test = data_setup.create_dataloaders(config=config)
 ################################################################################
 
 # Instantiate an instance of the model from the "model.py" script
-model = model.get_cnn_model(config=config)
+model = model.get_mask_rcnn_model(config=config)
 # Add attributes to the model for the device and model name
 model.device = config.DEVICE
 model.name   = config.MODEL_NAME
