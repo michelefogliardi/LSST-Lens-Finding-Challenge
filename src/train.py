@@ -138,11 +138,6 @@ data_loader_valid, \
 data_loader_test = data_setup.create_dataloaders(config=config)
 
 
-
-# data_loader_train, \
-# data_loader_valid, \
-# data_loader_test = data_setup.create_dataloaders_weighted(config=config)
-
 ################################################################################
 # Instantiate the Mask R-CNN model
 ################################################################################
