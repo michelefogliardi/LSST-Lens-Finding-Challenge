@@ -156,7 +156,7 @@ data_loader_test = data_setup.create_dataloaders(config=config)
 ################################################################################
 
 # Instantiate an instance of the model from the "model.py" script
-model = model.get_mask_rcnn_model(config=config)
+model = model.get_cnn_model(config=config)
 # Add attributes to the model for the device and model name
 model.device = config.DEVICE
 model.name   = config.MODEL_NAME

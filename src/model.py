@@ -588,7 +588,7 @@ def get_model_instance_segmentation(config):
 ################################################################################
 
 
-def get_mask_rcnn_model(config):
+def get_cnn_model(config):
     model = get_model_instance_segmentation(config=config)
     
     return model
@@ -604,5 +604,5 @@ def get_mask_rcnn_model(config):
 #         USE_PRETRAINED = True
 #         WIDTH = 100
 
-#     model = get_mask_rcnn_model(config=Config)
+#     model = get_cnn_model(config=Config)
 #     print(model)
