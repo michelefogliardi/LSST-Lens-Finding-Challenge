@@ -15,8 +15,6 @@ from torchsummary import summary
 import utils, data_setup
 import os
 
-
-
 ################################################################################
 
 def get_model_instance_segmentation(config):
@@ -332,7 +330,7 @@ def get_model_instance_segmentation(config):
             model.fc = model.head
 
         # Staged freezing (warm-up)
-        model._staged_freeze = False
+        model._staged_freeze  = False
         model._frozen_modules = []
 
         freeze_stages = getattr(config, "FREEZE_BACKBONE_STAGES", 0)  # 0: none, 1: stem, 2: stem+stage0
