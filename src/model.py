@@ -2,14 +2,10 @@
 Contains PyTorch model code to instantiate the Mask R-CNN model.
 """
 import torchvision
-# from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-# from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 import torchvision.models as models
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-# from zoobot.pytorch.training.finetune import FinetuneableZoobotClassifier
-# or FinetuneableZoobotRegressor, or FinetuneableZoobotTree
 import timm
 from torchsummary import summary
 import utils, data_setup
