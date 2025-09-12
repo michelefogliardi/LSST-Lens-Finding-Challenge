@@ -542,11 +542,11 @@ def get_model_instance_segmentation(config):
         # New: Conv2d(6, 64, kernel_size=3, padding=1)
         
         # Get the first conv layer parameters (except input channels)
-        first_conv = model.features[0]
+        first_conv   = model.features[0]
         out_channels = first_conv.out_channels
-        kernel_size = first_conv.kernel_size
-        stride = first_conv.stride
-        padding = first_conv.padding
+        kernel_size  = first_conv.kernel_size
+        stride       = first_conv.stride
+        padding      = first_conv.padding
         
         # Replace the first convolutional layer
         model.features[0] = nn.Conv2d(6, out_channels, kernel_size=kernel_size, 
