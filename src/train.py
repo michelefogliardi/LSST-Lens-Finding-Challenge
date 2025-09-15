@@ -13,7 +13,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from torchsummary import summary
-import data_setup, engine3, model, utils
+import data_setup, engine, model, utils
 
 ################################################################################
 # Create config class where to store some info on the model
@@ -42,25 +42,28 @@ class config:
     ### Set normalization type
     V_NORMALIZE = 'v3'
     
-    MEAN = [0.182512, 0.187020, 0.507372] # final_train.csv 2nd try
-    STD = [0.188272, 0.244794, 0.296535] # final_train.csv 2nd try
+    MEAN = [0.284284, 0.310959, 0.331269] # g/r/i asinh 99%
+    STD  = [0.263660, 0.306905, 0.333308]
     # MEAN = [0.011, 0.187, 0.507]
     # STD  = [0.030, 0.244, 0.296]
 
     ### Set paths
-    ROOT      = '/dati4/mfogliardi/training/ggsl'
-    TEST_DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/final_test.csv'
-    TRAIN_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_train.csv'
-    VALID_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_val.csv'
-    DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/art_test.csv'
+    ROOT      = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/'
+    TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test.csv'
+    TRAIN_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_valid.csv'
+
+
+    DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    
     ### Set path to the code
-    CODE_PATH = '/dati4/mfogliardi/training/ggsl/lo_zibaldone/'
+    CODE_PATH = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/'
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
     NUM_CLASSES = 2
     ### Total number of epochs for the training
     NUM_EPOCHS = 50
     ### Set batch size
-    BATCH_SIZE = 200
+    BATCH_SIZE = 1000
     ### Optimizer
     #OPTIMIZER = 'SGD'
     OPTIMIZER = 'AdamW'
@@ -143,7 +146,7 @@ data_loader_test = data_setup.create_dataloaders(config=config)
 ################################################################################
 
 # Instantiate an instance of the model from the "model.py" script
-model = model.get_mask_rcnn_model(config=config)
+model = model.get_cnn_model(config=config)
 # Add attributes to the model for the device and model name
 model.device = config.DEVICE
 model.name   = config.MODEL_NAME
@@ -234,7 +237,7 @@ else:
 print('\n--- START TRAINING ---')
 writer = SummaryWriter(log_dir=Path(checkpoint_file.parent))
 time_start = time.time()
-results = engine3.train(model=model,
+results = engine.train(model=model,
                        train_dataloader=data_loader_train,
                        valid_dataloader=data_loader_valid,
                        optimizer=optimizer,
@@ -271,8 +274,8 @@ utils.save_model_summary3(model=model,
 # # If the device is a GPU, empty the cache
 # ################################################################################
 
-# if config.DEVICE.type != 'cpu':
-#     torch.cuda.empty_cache()
+if config.DEVICE.type != 'cpu':
+    torch.cuda.empty_cache()
 
 # ################################################################################
 # # END

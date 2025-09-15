@@ -92,7 +92,7 @@ def show_gpu_memory(device):
 
 ################################################################################
 
-def create_model_dir(config, path='/dati4/mfogliardi/training/ggsl/', folder='models'):
+def create_model_dir(config, path='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/', folder='models'):
     """Create the model directory (if it does not already exist), using the
     date and time of execution."""
     base_dir  = Path(path)
