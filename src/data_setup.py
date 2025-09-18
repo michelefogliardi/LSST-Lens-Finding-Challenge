@@ -448,19 +448,30 @@ class BaseFitsLoader(BaseDataLoader):
         hdul = fits.open(img_path)
         # hdul.info()
         try:
-            # u = hdul[1].data
+            u = hdul[1].data
+            u_val = self.validate_data(u)
             g = hdul[2].data
             g_val = self.validate_data(g)
             r = hdul[3].data
             r_val = self.validate_data(r)
             i = hdul[4].data
             i_val = self.validate_data(i)
-            # z = hdul[5].data
-            return np.stack([g_val, r_val, i_val], axis=0)  # (3, H, W)
+            z = hdul[5].data
+            z_val = self.validate_data(z)
+            u_g = (u_val + g_val / 2.)
+            i_z = (i_val + z_val / 2.)
+            # return np.stack([g_val, r_val, i_val], axis=0)  # (3, H, W)
+            return np.stack([u_g, r_val, i_z], axis=0)  # (3, H, W)
+        
 
         finally:
             hdul.close()
 
+
+        
+
+        
+            
 class NPYLoader(BaseDataLoader):
     def load_data(self, img_path: str) -> np.ndarray:
         vis = np.load(img_path)

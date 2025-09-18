@@ -1,16 +1,20 @@
+
 import torch
 import torch.nn as nn
 from torchvision import models
 from data_setup import create_dataloaders, create_multichannel_dataloaders
 import utils
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]='1'
+# os.environ["CUDA_VISIBLE_DEVICES"]='1'
 from sklearn.metrics import precision_recall_fscore_support, accuracy_score
 import timm
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from datetime import datetime
+import aplpy
+from astropy.io import fits
+from PIL import Image
 
 def clip_percentile(img, perc=98):
         """
@@ -57,7 +61,7 @@ class config:
     VERSION = '0.0.1'
     print('[INFO] Version of the code:', VERSION)
     ### Set name of the model
-    MODEL = 'zoobot_6ch_adapter' # 'vgg16', 'vgg19', 'efficientnet-b0', 'zoobot'
+    MODEL = 'zoobot' # 'vgg16', 'vgg19', 'efficientnet-b0', 'zoobot'
     MODEL_NAME = MODEL
     ### Set device
     DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -69,41 +73,26 @@ class config:
     WIDTH  = 100
     ### Set normalization type
     V_NORMALIZE = 'v3'
-    # MEAN = [0.412, 0.200, 0.085] # train.csv
-    # STD = [0.140, 0.236, 0.121] # train.csv
-    # MEAN = [0.446, 0.201, 0.084] # merged_train.csv
-    # STD = [0.134, 0.239, 0.126] # merged_train.csv
-    # MEAN = [0.332, 0.148, 0.050] # q1_lenses.csv
-    # STD = [0.132, 0.204, 0.101] # q1_lenses.csv
-
-    # MEAN = [0.207, 0.201, 0.504] # merged_train.csv 2nd try
-    # STD = [0.151, 0.239, 0.300] # merged_train.csv 2nd try
-    # MEAN = [0.287, 0.187, 0.078] # final_train.csv normal (beta=1)
-    # STD = [0.135, 0.229, 0.122] # final_train.csv normal (beta=1)
-    # MEAN = [0.182, 0.187, 0.507] # final_train.csv 2nd try
-    # STD = [0.147, 0.229, 0.294] # final_train.csv 2nd try
-
-    # MEAN = [0.011392, 0.017252, 0.025831, 0.501423, 0.507372, 0.187020] # wrong sequence of channels
-    # STD  = [0.030090, 0.733123, 0.534643, 0.189828, 0.296535, 0.244794]
     
-    # MEAN = [0.011392, 0.187020, 0.507372, 0.501423, 0.025831, 0.017252] # 6ch pow
-    # STD  = [0.030090, 0.244794, 0.296535, 0.189828, 0.534643, 0.733123]
     
-    MEAN = [0.182512, 0.187020, 0.507372, 0.501423, 0.025831, 0.017252] # 6ch 2ndtry
-    STD  = [0.188272, 0.244794, 0.296535, 0.189828, 0.534643, 0.733123]
+    # MEAN = [0.284284, 0.310959, 0.331269] # g/r/i asinh 99%
+    # STD  = [0.263660, 0.306905, 0.333308]
     
-    # MEAN = [0.011, 0.187, 0.507]
-    # STD  = [0.030, 0.244, 0.296]
+    MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
+    STD  = [0.259621, 0.298554, 0.349212]
+    
     
     ### Set paths
-    ROOT      = '/dati4/mfogliardi/training/ggsl'
-    TEST_DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/final_test.csv'
-    TRAIN_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_train.csv'
-    VALID_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_val.csv'
-    DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/art_test.csv'
+    ROOT      = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/'
+    TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test.csv'
+    TRAIN_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_valid.csv'
+
+
+    DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
     
     ### Set path to the code
-    CODE_PATH = '/dati4/mfogliardi/training/ggsl/lo_zibaldone/'
+    CODE_PATH = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/'
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
     NUM_CLASSES = 2
     ### Total number of epochs for the training
@@ -156,7 +145,7 @@ utils.fix_all_seeds(config.SEED)
 
 
 
-model_path = '/dati4/mfogliardi/training/ggsl/models/zoobot_6ch_2ndtry_freeze4_5e5_step_id3/zoobot_6ch_adapter.pt'
+model_path = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/models/zoobot_ug_r_iz_asinh99/zoobot.pt'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -690,12 +679,13 @@ elif config.MODEL == 'resnet50_6ch_pretrained':
 model.load_state_dict(torch.load(model_path))
 model = model.to(device)
 # Create the DataLoader for the test set
-# _, data_loader_valid, data_loader_test = create_dataloaders(config=config)
-_, data_loader_valid, data_loader_test = create_multichannel_dataloaders(config=config)
+_, data_loader_valid, data_loader_test = create_dataloaders(config=config)
+# _, data_loader_valid, data_loader_test = create_multichannel_dataloaders(config=config)
 ##############################################################################################    
 
 
-def evaluate_model_and_save_results(model, data_loader_test, device, config, save_dir='/dati4/mfogliardi/training/ggsl/models/results/'):
+def evaluate_model_and_save_results(model, data_loader_test, device, config, 
+                                    save_dir='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/results/'):
     """
     Evaluate model performance and save mispredicted objects to PDF.
     
@@ -858,12 +848,19 @@ def evaluate_model_and_save_results(model, data_loader_test, device, config, sav
 
 def evaluate_model_and_save_results_by_subcategory(
     model, data_loader_test, device, config, 
-    save_dir='/dati4/mfogliardi/training/ggsl/models/results/'
+    save_dir='/dati4/mfogliardi/training/ggsl/models/results/',
+    model_name='model',
+    csv_path=None
 ):
     """
     Evaluate model performance and save mispredicted objects to PDF, grouped by subcategory.
     """
     import collections
+
+    # Resolve CSV path default
+    if csv_path is None:
+        csv_path = getattr(config, "TEST_DATA_CSV", 
+                           "/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test_results.csv")
 
     os.makedirs(save_dir, exist_ok=True)
     model.eval()
@@ -873,13 +870,17 @@ def evaluate_model_and_save_results_by_subcategory(
     all_predictions = []
     all_probabilities = []
 
+    # Collect per-cutout probabilities for class=1 (lens)
+    scores_paths = []
+    scores_probs = []
+
     # Subcategory definitions
     subcategories = {
-        "sim_ggsl": "/dati4/mfogliardi/training/ggsl/dataset/ggsl/",
-        "sim_notggsl": "/dati4/mfogliardi/training/ggsl/dataset/notggsl/",
-        "q1lenses": "/dati4/mfogliardi/training/ggsl/dataset/q1lenses",
-        "artefacts": "/dati4/mfogliardi/training/ggsl/artefacts/",
-        "trickygalaxies": "/dati4/mfogliardi/training/ggsl/dataset/trickygirls/",
+        "sim_ggsl": "/astrodata/lensing_challenge_lsst/data_slsim_lenses/",
+        "sim_notggsl": "/astrodata/lensing_challenge_lsst/data_slsim_nonlenses/",
+        "hsc_lenses": "/astrodata/lensing_challenge_lsst/data_hsc_lenses/",
+        "hsc__nonlenses": "/astrodata/lensing_challenge_lsst/data_hsc_nonlenses/",
+        
     }
     subcat_names = list(subcategories.keys())
 
@@ -913,6 +914,15 @@ def evaluate_model_and_save_results_by_subcategory(
             for i, (img, target, pred, prob) in enumerate(zip(images, targets, predicted, probabilities)):
                 sample_idx = batch * data_loader_test.batch_size + i
                 cutout_name = data_loader_test.dataset.get_filename(sample_idx)
+
+                # Record probability for class=1 (lens)
+                try:
+                    prob_lens = float(prob[1].item())
+                except Exception:
+                    # Fallback if tensor indexing differs
+                    prob_lens = float(torch.nn.functional.softmax(prob.unsqueeze(0), dim=1)[0, 1].item())
+                scores_paths.append(cutout_name)
+                scores_probs.append(prob_lens)
                 # Identify subcategory
                 subcat = None
                 for name, path in subcategories.items():
@@ -990,23 +1000,116 @@ def evaluate_model_and_save_results_by_subcategory(
                     probs = example['probabilities']
                     cutout_name = example['cutout_name']
 
-                    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+                    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
                     fig.suptitle(
                         f'Object {idx+1}/{len(ordered_examples)} - {cutout_name}\n'
                         f'True: {class_names[true_class]} | Predicted: {class_names[pred_class]} | Confidence: {probs[pred_class]:.3f}',
                         fontsize=14, weight='bold'
                     )
-                    channel_names = ['MTF', 'Asinh_Low', 'Asinh_High']
+                    channel_names = ['G', 'R', 'I', 'RGB']
                     for ch in range(3):
                         axes[ch].imshow(img[ch], cmap='viridis')
                         axes[ch].set_title(f'{channel_names[ch]}', fontsize=12)
                         axes[ch].axis('off')
+                    
+
+                    # img shape: (3, H, W), already stretched
+
+                    # --- New: Create RGB using aplpy and FITS temp files ---
+                    def make_rgb_from_arrays(path, out_png="temp_rgb.png"):
+                        with fits.open(path) as hdul:
+                            data_r = hdul[3].data.astype(float)
+                            data_g = hdul[2].data.astype(float)
+                            data_b = hdul[1].data.astype(float)
+                            header_r = hdul[3].header
+                            header_g = hdul[2].header
+                            header_b = hdul[1].header
+
+                            # Write each band to a temporary FITS file with its header
+                            tmp_r = "tmp_r.fits"
+                            tmp_g = "tmp_g.fits"
+                            tmp_b = "tmp_b.fits"
+                            fits.writeto(tmp_r, data_r, header=header_r, overwrite=True)
+                            fits.writeto(tmp_g, data_g, header=header_g, overwrite=True)
+                            fits.writeto(tmp_b, data_b, header=header_b, overwrite=True)
+                            
+                        aplpy.make_rgb_image([tmp_r, tmp_g, tmp_b], out_png,
+                                             stretch_r='linear', stretch_g='linear', stretch_b='linear',
+                                             pmin_r=0, pmax_r=99, pmin_g=0, pmax_g=99, pmin_b=0, pmax_b=99)
+                        os.remove(tmp_r)
+                        os.remove(tmp_g)
+                        os.remove(tmp_b)
+                        return out_png
+
+                    try:
+                        rgb_png = make_rgb_from_arrays(cutout_name, out_png=f"temp_rgb_{idx}.png")
+                        rgb_img = np.array(Image.open(rgb_png))
+                        axes[3].imshow(rgb_img)
+                        axes[3].set_title(f'{channel_names[3]}', fontsize=12)
+                        axes[3].axis('off')
+                        
+                    except Exception as e:
+                        print(f"Warning: RGB creation failed for {cutout_name}: {e}")
+                        # Try to show the image if it was created
+                        if os.path.exists(f"temp_rgb_{idx}.png"):
+                            rgb_img = np.array(Image.open(f"temp_rgb_{idx}.png"))
+                            axes[3].imshow(rgb_img)
+                            axes[3].set_title(f'{channel_names[3]} (error)', fontsize=12)
+                            axes[3].axis('off')
+                        else:
+                            axes[3].set_title(f'{channel_names[3]} (failed)', fontsize=12)
+                            axes[3].axis('off')
+                    finally:
+                        if os.path.exists(f"temp_rgb_{idx}.png"):
+                            os.remove(f"temp_rgb_{idx}.png")
+                                        
+                    
+                                        
                     plt.tight_layout()
                     pdf.savefig(fig, bbox_inches='tight')
                     plt.close(fig)
                     if (idx + 1) % 50 == 0:
                         print(f"    Processed {idx + 1}/{len(ordered_examples)} misclassified objects")
             print("  PDF saved successfully!")
+
+    # After evaluation, write class=1 probabilities to CSV
+    try:
+        import pandas as pd  # local import to avoid hard dependency at module import time
+        df = pd.read_csv(csv_path)
+        # Sanitize column name a bit
+        colname = f"scores_{str(model_name).replace(' ', '_').replace('/', '_')}"
+
+        # Prefer path-based mapping when possible
+        wrote_by_path = False
+        if "path" in df.columns:
+            def _norm(p):
+                try:
+                    return os.path.abspath(os.path.normpath(str(p)))
+                except Exception:
+                    return str(p)
+            df["_path_norm"] = df["path"].apply(_norm)
+            mapping = { _norm(p): s for p, s in zip(scores_paths, scores_probs) }
+            df[colname] = df["_path_norm"].map(mapping)
+            missing = int(df[colname].isna().sum())
+            if missing == 0:
+                wrote_by_path = True
+            # Clean helper
+            df.drop(columns=["_path_norm"], inplace=True, errors="ignore")
+
+        if not wrote_by_path:
+            # Positional fallback if lengths match
+            if len(df) == len(scores_probs):
+                df[colname] = pd.Series(scores_probs, index=df.index)
+            else:
+                print(f"[ERROR] Cannot write scores: CSV rows {len(df)} != scores {len(scores_probs)}")
+                return subcat_stats
+
+        df.to_csv(csv_path, index=False)
+        print(f"[INFO] Saved class=1 probabilities to '{csv_path}' in column '{colname}'")
+    except FileNotFoundError:
+        print(f"[ERROR] CSV not found: {csv_path}. Skipping score write.")
+    except Exception as e:
+        print(f"[ERROR] Failed to update CSV: {e}")
 
     return subcat_stats
 
@@ -1016,7 +1119,9 @@ subcat_results = evaluate_model_and_save_results_by_subcategory(
     data_loader_test=data_loader_test,
     device=device,
     config=config,
-    save_dir='/dati4/mfogliardi/training/ggsl/models/results/subdivided/q1test'
+    save_dir='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/results/zoobot_ug_r_iz_asinh99',
+    model_name='zoobot_ug_r_iz_asinh99',
+    csv_path='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test_results.csv'
 )
 # # Usage - replace your existing evaluation code with this:
 # results = evaluate_model_and_save_results(
@@ -1025,98 +1130,4 @@ subcat_results = evaluate_model_and_save_results_by_subcategory(
 #     device=device, 
 #     config=config,
 #     save_dir='/dati4/mfogliardi/training/ggsl/models/results/'
-# 
-# # RESULTS:
-    ######################################################################
-    # zoobot norm
-    # Overall accuracy: 98.63%
-    # Total misclassified: 18
-    # Class 0 (notGGSL): Precision: 0.99, Recall: 0.99, F1-score: 0.99
-    # Class 1 (GGSL): Precision: 0.98, Recall: 0.98, F1-score: 0.98
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 802/810 correct (99.01%)
-    # Class 1 (GGSL): 497/507 correct (98.03%)
-    ######################################################################
-    # VGG19 norm
-    # Overall accuracy: 98.03%
-    # Total misclassified: 26
-    # Class 0 (notGGSL): Precision: 0.99, Recall: 0.98, F1-score: 0.98
-    # Class 1 (GGSL): Precision: 0.97, Recall: 0.98, F1-score: 0.97
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 796/810 correct (98.27%)
-    # Class 1 (GGSL): 495/507 correct (97.63%)
-    ######################################################################
-    # resnet50
-    # Overall accuracy: 97.49%
-    # Total misclassified: 33
-    # Class 0 (notGGSL): Precision: 0.99, Recall: 0.97, F1-score: 0.98
-    # Class 1 (GGSL): Precision: 0.95, Recall: 0.99, F1-score: 0.97
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 783/810 correct (96.67%)
-    # Class 1 (GGSL): 501/507 correct (98.82%)
-    ######################################################################
-    # zoobot 2nd try
-    # Overall accuracy: 98.03%
-    # Total misclassified: 26
-    # Class 0 (notGGSL): Precision: 0.98, Recall: 0.98, F1-score: 0.98
-    # Class 1 (GGSL): Precision: 0.97, Recall: 0.97, F1-score: 0.97
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 797/810 correct (98.40%)
-    # Class 1 (GGSL): 494/507 correct (97.44%)
-    ######################################################################
-    # resnet 50 2nd try
-    # Overall accuracy: 98.48%
-    # Total misclassified: 20
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 797/810 correct (98.40%)
-    # Class 1 (GGSL): 500/507 correct (98.62%)
-
-    # Prediction Distribution:
-    # Class 0 (notGGSL): predicted 804 times
-    # Class 1 (GGSL): predicted 513 times
-    #######################################################################
-    # zoobot 2nd try on final test
-    # Overall accuracy: 97.59%
-    # Total misclassified: 45
-    # Class 0 (notGGSL): Precision: 0.98, Recall: 0.98, F1-score: 0.98
-    # Class 1 (GGSL): Precision: 0.96, Recall: 0.96, F1-score: 0.96
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 1283/1305 correct (98.31%)
-    # Class 1 (GGSL): 543/566 correct (95.94%) # 55q1/60
-
-    # Prediction Distribution:
-    # Class 0 (notGGSL): predicted 1306 times
-    # Class 1 (GGSL): predicted 565 times
-    #######################################################################
-    # resnet50 2nd try on final test
-    # Overall accuracy: 98.24%
-    # Total misclassified: 33
-    # Class 0 (notGGSL): Precision: 0.98, Recall: 0.99, F1-score: 0.99
-    # Class 1 (GGSL): Precision: 0.98, Recall: 0.96, F1-score: 0.97
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 1296/1305 correct (99.31%)
-    # Class 1 (GGSL): 542/566 correct (95.76%) # 54q1/60
-
-    # Prediction Distribution:
-    # Class 0 (notGGSL): predicted 1320 times
-    # Class 1 (GGSL): predicted 551 times
-    #######################################################################
-    # vgg19 2nd try on final test
-    # Overall accuracy: 97.97%
-    # Total misclassified: 38
-    # Class 0 (notGGSL): Precision: 0.99, Recall: 0.98, F1-score: 0.99
-    # Class 1 (GGSL): Precision: 0.96, Recall: 0.97, F1-score: 0.97
-
-    # Class-wise Performance:
-    # Class 0 (notGGSL): 1285/1305 correct (98.47%)
-    # Class 1 (GGSL): 548/566 correct (96.82%) # 54q1/60
-
-    # Prediction Distribution:
-    # Class 0 (notGGSL): predicted 1303 times
-    # Class 1 (GGSL): predicted 568 times
+# )
