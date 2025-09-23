@@ -8,12 +8,12 @@ import os
 import time
 import torch
 import torch.nn as nn
-os.environ["CUDA_VISIBLE_DEVICES"]='0'
+# os.environ["CUDA_VISIBLE_DEVICES"]='0'
 device = "cuda" if torch.cuda.is_available() else "cpu"
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from torchsummary import summary
-import data_setup, engine, model, utils
+import data_setup, engine6, model, utils
 
 ################################################################################
 # Create config class where to store some info on the model
@@ -26,9 +26,9 @@ class config:
     VERSION = '0.0.1'
     print('[INFO] Version of the code:', VERSION)
     ### Set name of the model
-    MODEL = 'zoobot_euclid_6ch_adapter'
+    MODEL = 'zoobot_5ch_adapter'
     MODEL_NAME = MODEL
-    SAVED_MODEL = '/dati4/mfogliardi/training/ggsl/models/zoobot_6ch_2ndtry_freeze4_5e5_step_id3/zoobot_6ch_adapter.pt'
+    # SAVED_MODEL = '/dati4/mfogliardi/training/ggsl/models/0.0.1_2025-08-25_15-13-18/resnet50.pt'
     ### Set device
     DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     print('[INFO] Using device:', DEVICE)
@@ -39,44 +39,36 @@ class config:
     WIDTH  = 100
     ### Set normalization type
     V_NORMALIZE = 'v3'
-    # MEAN = [0.412, 0.200, 0.085] # train.csv
-    # STD = [0.140, 0.236, 0.121] # train.csv
-    # MEAN = [0.446, 0.201, 0.084] # merged_train.csv
-    # STD = [0.134, 0.239, 0.126] # merged_train.csv
-    # MEAN = [0.207, 0.201, 0.504] # merged_train.csv 2nd try
-    # STD = [0.151, 0.239, 0.300] # merged_train.csv 2nd try
     
-    # MEAN = [0.287, 0.187, 0.078] # final_train.csv normal (beta=1)
-    # STD = [0.135, 0.229, 0.122] # final_train.csv normal (beta=1)
-    # MEAN = [0.182, 0.187, 0.507] # final_train.csv 2nd try
-    # STD = [0.147, 0.229, 0.294] # final_train.csv 2nd try
+    # MEAN = [0.284284, 0.310959, 0.331269] # g/r/i asinh 99%
+    # STD  = [0.263660, 0.306905, 0.333308]
     
-    # MEAN = [0.011392, 0.187020, 0.507372, 0.501423, 0.025831, 0.017252] # 6ch pow
-    # STD  = [0.030090, 0.244794, 0.296535, 0.189828, 0.534643, 0.733123]
+    # MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
+    # STD  = [0.259621, 0.298554, 0.349212]
     
-    # MEAN = [0.182512, 0.187020, 0.507372, 0.501423, 0.025831, 0.017252] # 6ch 2ndtry
-    # STD  = [0.188272, 0.244794, 0.296535, 0.189828, 0.534643, 0.733123]
+    # MEAN = [0.011, 0.187, 0.507]
+    # STD  = [0.030, 0.244, 0.296]
     
-    MEAN = [0.182772, 0.187033, 0.507411, 0.172818, 0.025821, 0.017266] # 6ch 2ndtry zoom0
-    STD  = [0.188229, 0.244853, 0.296725, 0.180817, 0.535088, 0.734407]
-    
-    # MEAN = [0.182513, 0.187020, 0.507372, 0.014899, 0.025455, 0.262853] # 6ch asinh fam
-    # STD  = [0.188272, 0.244794, 0.296535, 0.093289, 0.094730, 0.047978]
-    
+    MEAN = [0.161927, 0.158478, 0.194141, 0.189002, 0.228415]
+    STD  = [0.242562, 0.237847, 0.261295, 0.260213, 0.285261]
+
     ### Set paths
-    ROOT      = '/dati4/mfogliardi/training/ggsl'
-    TEST_DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/final_test.csv'
-    TRAIN_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_train.csv'
-    VALID_DATA_CSV = '/dati4/mfogliardi/training/ggsl/csv/final_val.csv'
-    DATA_CSV  = '/dati4/mfogliardi/training/ggsl/csv/art_test.csv'
+    ROOT      = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/'
+    TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test.csv'
+    TRAIN_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_valid.csv'
+
+
+    DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    
     ### Set path to the code
-    CODE_PATH = '/dati4/mfogliardi/training/ggsl/lo_zibaldone/'
+    CODE_PATH = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/'
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
     NUM_CLASSES = 2
     ### Total number of epochs for the training
-    NUM_EPOCHS = 60
+    NUM_EPOCHS = 50
     ### Set batch size
-    BATCH_SIZE = 200
+    BATCH_SIZE = 1000
     ### Optimizer
     #OPTIMIZER = 'SGD'
     OPTIMIZER = 'AdamW'
@@ -113,12 +105,12 @@ class config:
         MIN_LR = 1e-7
     ### If True, use the pretrained weights
     USE_PRETRAINED = True
-    ADAPTER_INIT = 'identity_first3'
+    ADAPTER_INIT = 'average_all'
     BACKBONE_LR_MULT = 1.0
     HEAD_LR_MULT = 5.0
     ADAPTER_LR_MULT = 5.0
     WARMUP_FREEZE_EPOCHS = 4
-    BACKBONE_CKPT = '/dati4/mfogliardi/training/ggsl/models/zoobot_euclid_2nd_try_final_train_zoom0/zoobot_euclid.pt'
+    BACKBONE_CKPT = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/models/zoobot_riz_asinh99_rightnorm/zoobot.pt'
     # FREEZE_BACKBONE_STAGES = 0  # used by 'resnet50_6ch_pretrained'
     # BACKBONE_LR_MULT = 1.0 # used by 'resnet50_6ch_pretrained'
     # HEAD_LR_MULT = 5.0 # used by 'resnet50_6ch_pretrained'
@@ -174,7 +166,7 @@ data_loader_test = data_setup.create_multichannel_dataloaders(config=config)
 ################################################################################
 
 # Instantiate an instance of the model from the "model.py" script
-model = model.get_mask_rcnn_model(config=config)
+model = model.get_cnn_model(config=config)
 # Add attributes to the model for the device and model name
 model.device = config.DEVICE
 model.name   = config.MODEL_NAME
@@ -383,7 +375,7 @@ else:
 print('\n--- START TRAINING ---')
 writer = SummaryWriter(log_dir=Path(checkpoint_file.parent))
 time_start = time.time()
-results = engine.train(model=model,
+results = engine6.train(model=model,
                        train_dataloader=data_loader_train,
                        valid_dataloader=data_loader_valid,
                        optimizer=optimizer,

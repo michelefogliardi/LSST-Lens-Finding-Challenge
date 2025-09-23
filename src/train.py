@@ -44,9 +44,17 @@ class config:
     
     # MEAN = [0.284284, 0.310959, 0.331269] # g/r/i asinh 99%
     # STD  = [0.263660, 0.306905, 0.333308]
+    # MEAN = [0.161927, 0.158478, 0.194141] # g/r/i asinh 99%
+    # STD  = [0.242562, 0.237847, 0.261295]
     
-    MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
-    STD  = [0.259621, 0.298554, 0.349212]
+    
+
+
+    
+    # MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
+    # STD  = [0.259621, 0.298554, 0.349212]
+    MEAN = [0.162559, 0.158490, 0.189509] # u_g/r/i_z asinh 99%
+    STD  = [0.244132, 0.237820, 0.258841]
     # MEAN = [0.011, 0.187, 0.507]
     # STD  = [0.030, 0.244, 0.296]
 
@@ -64,7 +72,7 @@ class config:
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
     NUM_CLASSES = 2
     ### Total number of epochs for the training
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 30
     ### Set batch size
     BATCH_SIZE = 1000
     ### Optimizer

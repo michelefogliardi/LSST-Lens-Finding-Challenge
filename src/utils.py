@@ -152,7 +152,7 @@ def save_config(config, file_name=None):
 def save_model_summary(model, config, file_name=None):
     """Print a summary of the model using `torchinfo`."""
     model_summary = summary(model=model,
-                            input_size=(config.BATCH_SIZE, 6, config.HEIGHT, config.WIDTH), # make sure this is "input_size", not "input_shape"
+                            input_size=(config.BATCH_SIZE, 5, config.HEIGHT, config.WIDTH), # make sure this is "input_size", not "input_shape"
                             col_names=["input_size", "output_size", "num_params", "trainable"],
                             #col_width=25,
                             row_settings=["var_names"],
