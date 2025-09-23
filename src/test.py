@@ -77,9 +77,17 @@ class config:
     
     # MEAN = [0.284284, 0.310959, 0.331269] # g/r/i asinh 99%
     # STD  = [0.263660, 0.306905, 0.333308]
+    MEAN = [0.161927, 0.158478, 0.194141] # g/r/i asinh 99% right norm
+    STD  = [0.242562, 0.237847, 0.261295]
     
-    MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
-    STD  = [0.259621, 0.298554, 0.349212]
+    # MEAN = [0.275266, 0.298942, 0.345367] # u_g/r/i_z asinh 99%
+    # STD  = [0.259621, 0.298554, 0.349212]
+    # MEAN = [0.162559, 0.158490, 0.189509] # u_g/r/i_z asinh 99% right norm
+    # STD  = [0.244132, 0.237820, 0.258841]
+
+    # MEAN = [0.161927, 0.158478, 0.194141, 0.189002, 0.228415] # rizgy asinh 99% right norm
+    # STD  = [0.242562, 0.237847, 0.261295, 0.260213, 0.285261]
+    
     
     
     ### Set paths
@@ -145,7 +153,7 @@ utils.fix_all_seeds(config.SEED)
 
 
 
-model_path = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/models/zoobot_ug_r_iz_asinh99/zoobot.pt'
+model_path = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/models/zoobot_riz_asinh99_rightnorm/zoobot.pt'
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -260,7 +268,7 @@ elif config.MODEL == 'zoobot':
         # Load the Zoobot encoder with its classifier
         model = timm.create_model('hf_hub:mwalmsley/zoobot-encoder-convnext_base', pretrained=True, num_classes=config.NUM_CLASSES)
 
-elif config.MODEL == 'zoobot_6ch_adapter':
+elif config.MODEL == 'zoobot_5ch_adapter':
         
         class ZoobotWithAdapter(nn.Module):
             def __init__(self, num_in_ch: int, num_classes: int,
@@ -279,7 +287,7 @@ elif config.MODEL == 'zoobot_6ch_adapter':
                 if hasattr(self.backbone, "head") and isinstance(self.backbone.head, nn.Module):
                     self.backbone.fc = self.backbone.head
 
-                # 6->3 learnable adapter (linear per-pixel mixing)
+                # 5->3 learnable adapter (linear per-pixel mixing)
                 self.adapter = nn.Conv2d(num_in_ch, 3, kernel_size=1, bias=False)
                 with torch.no_grad():
                     w = self.adapter.weight  # [3, num_in_ch, 1, 1]
@@ -305,11 +313,11 @@ elif config.MODEL == 'zoobot_6ch_adapter':
                     print(f"[INFO] Loaded Zoobot backbone from {backbone_ckpt} (missing: {len(missing)}, unexpected: {len(unexpected)})")
 
             def forward(self, x):
-                x = self.adapter(x)  # [B,6,H,W] -> [B,3,H,W]
+                x = self.adapter(x)  # [B,5,H,W] -> [B,3,H,W]
                 return self.backbone(x)
 
         model = ZoobotWithAdapter(
-            num_in_ch=6,
+            num_in_ch=5,
             num_classes=config.NUM_CLASSES,
             use_pretrained=getattr(config, "USE_PRETRAINED", True),
             init_mode=getattr(config, "ADAPTER_INIT", "identity_first3"),
@@ -1006,7 +1014,7 @@ def evaluate_model_and_save_results_by_subcategory(
                         f'True: {class_names[true_class]} | Predicted: {class_names[pred_class]} | Confidence: {probs[pred_class]:.3f}',
                         fontsize=14, weight='bold'
                     )
-                    channel_names = ['G', 'R', 'I', 'RGB']
+                    channel_names = ['R', 'I', 'Z', 'RGB']
                     for ch in range(3):
                         axes[ch].imshow(img[ch], cmap='viridis')
                         axes[ch].set_title(f'{channel_names[ch]}', fontsize=12)
@@ -1119,8 +1127,8 @@ subcat_results = evaluate_model_and_save_results_by_subcategory(
     data_loader_test=data_loader_test,
     device=device,
     config=config,
-    save_dir='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/results/zoobot_ug_r_iz_asinh99',
-    model_name='zoobot_ug_r_iz_asinh99',
+    save_dir='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/results/zoobot_riz_asinh99_rightnorm',
+    model_name='zoobot_riz_asinh99',
     csv_path='/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test_results.csv'
 )
 # # Usage - replace your existing evaluation code with this:
