@@ -220,7 +220,7 @@ def get_model_instance_segmentation(config):
         
         # summary(model, (3, 100, 100))  # Adjust the input size as needed
     
-    elif config.MODEL == 'zoobot_6ch_adapter':
+    elif config.MODEL == 'zoobot_5ch_adapter':
         
         class ZoobotWithAdapter(nn.Module):
             def __init__(self, num_in_ch: int, num_classes: int,
@@ -239,7 +239,7 @@ def get_model_instance_segmentation(config):
                 if hasattr(self.backbone, "head") and isinstance(self.backbone.head, nn.Module):
                     self.backbone.fc = self.backbone.head
 
-                # 6->3 learnable adapter (linear per-pixel mixing)
+                # 5->3 learnable adapter (linear per-pixel mixing)
                 self.adapter = nn.Conv2d(num_in_ch, 3, kernel_size=1, bias=False)
                 with torch.no_grad():
                     w = self.adapter.weight  # [3, num_in_ch, 1, 1]
@@ -265,11 +265,11 @@ def get_model_instance_segmentation(config):
                     print(f"[INFO] Loaded Zoobot backbone from {backbone_ckpt} (missing: {len(missing)}, unexpected: {len(unexpected)})")
 
             def forward(self, x):
-                x = self.adapter(x)  # [B,6,H,W] -> [B,3,H,W]
+                x = self.adapter(x)  # [B,5,H,W] -> [B,3,H,W]
                 return self.backbone(x)
 
         model = ZoobotWithAdapter(
-            num_in_ch=6,
+            num_in_ch=5,
             num_classes=config.NUM_CLASSES,
             use_pretrained=getattr(config, "USE_PRETRAINED", True),
             init_mode=getattr(config, "ADAPTER_INIT", "identity_first3"),
