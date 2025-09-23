@@ -64,10 +64,10 @@ class config:
     ### Set normalization type
     V_NORMALIZE = 'v3'
     
-    # MEAN = [0.485, 0.456, 0.406]  # ImageNet mean
-    # STD  = [0.229, 0.224, 0.225]  # ImageNet std
-    MEAN = [0, 0, 0]  # ImageNet mean
-    STD  = [1, 1, 1]  # ImageNet std
+    MEAN = [0.161927, 0.158478, 0.194141] 
+    STD  = [0.242562, 0.237847, 0.261295]  
+    # MEAN = [0.161927, 0.158478, 0.194141, 0.189002, 0.228415]
+    # STD  = [0.242562, 0.237847, 0.261295, 0.260213, 0.285261]
     ### Set paths
     ROOT      = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/'
     TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test.csv'
@@ -132,6 +132,7 @@ class GGSL_Dataset(torch.utils.data.Dataset):
         self.filenames        = self.df_cutouts.iloc[:,0].tolist()  # Assuming first column is filenames
         self.mean_value      = config.MEAN
         self.std_value       = config.STD
+        self.num_channels     = 3  # Default to 3 channels (can be modified later)
         
         # Initialize pipeline components
         self.data_loader_factory = DataLoaderFactory()
@@ -285,8 +286,10 @@ class GGSL_Dataset(torch.utils.data.Dataset):
         return self.filenames[idx]
     
     def _identify_dataset_type(self, img_path: str) -> str:
-        """Identify dataset type based on file path patterns."""
+        if self.num_channels == 5:
+            return DatasetTypeEnum.BASE_5CH
         return DatasetTypeEnum.BASE
+    
     
     #--------------------------------------------------------------------------#
 
@@ -369,9 +372,10 @@ class GGSL_Dataset(torch.utils.data.Dataset):
             data = data_loader.load_data(img_path)
             
             # Apply stretch pipeline to get 3-channel image
-            img = self.stretch_pipeline.asinh_filters(data)
+            # img = self.stretch_pipeline.asinh_filters(data) # 3CH
             # img = self.stretch_pipeline.mtf_filters(data)
-
+            img = self.stretch_pipeline.apply_stretches(data) # 5CH
+            
             # Get target
             obj_class = self.df_cutouts.iloc[idx,1]
             target = torch.as_tensor(obj_class, dtype=torch.uint8)
@@ -419,6 +423,7 @@ class GGSL_Dataset(torch.utils.data.Dataset):
 class DatasetTypeEnum:
     BASE = "base"
     NPY = "npy"
+    BASE_5CH = "base_5ch"
 
 class DataLoaderFactory:
     """Factory for creating appropriate data loaders based on dataset type."""
@@ -427,7 +432,8 @@ class DataLoaderFactory:
     def create_loader(dataset_type: str):
         loaders = {
             DatasetTypeEnum.BASE: BaseFitsLoader(),
-            DatasetTypeEnum.NPY: NPYLoader()
+            DatasetTypeEnum.NPY: NPYLoader(),
+            DatasetTypeEnum.BASE_5CH: BaseFitsLoader_5CH()  
         }
         return loaders.get(dataset_type, BaseFitsLoader())
 
@@ -448,21 +454,43 @@ class BaseFitsLoader(BaseDataLoader):
         hdul = fits.open(img_path)
         # hdul.info()
         try:
-            u = hdul[1].data
-            u_val = self.validate_data(u)
-            g = hdul[2].data
+            g = hdul[1].data
             g_val = self.validate_data(g)
-            r = hdul[3].data
+            r = hdul[2].data
             r_val = self.validate_data(r)
-            i = hdul[4].data
+            i = hdul[3].data
             i_val = self.validate_data(i)
-            z = hdul[5].data
+            z = hdul[4].data
             z_val = self.validate_data(z)
-            u_g = (u_val + g_val / 2.)
-            i_z = (i_val + z_val / 2.)
-            # return np.stack([g_val, r_val, i_val], axis=0)  # (3, H, W)
-            return np.stack([u_g, r_val, i_z], axis=0)  # (3, H, W)
+            y = hdul[5].data
+            y_val = self.validate_data(y)
+            g_r = (g_val + r_val / 2.)
+            z_y = (z_val + y_val / 2.)
+            # return np.stack([r_val, i_val, z_val], axis=0)  # (3, H, W)
+            return np.stack([g_r, i_val, z_y], axis=0)  # (3, H, W)
         
+
+        finally:
+            hdul.close()
+
+class BaseFitsLoader_5CH(BaseDataLoader):
+    def load_data(self, img_path: str) -> np.ndarray:
+        hdul = fits.open(img_path)
+        # hdul.info()
+        try:
+            g = hdul[1].data
+            g_val = self.validate_data(g)
+            r = hdul[2].data
+            r_val = self.validate_data(r)
+            i = hdul[3].data
+            i_val = self.validate_data(i)
+            z = hdul[4].data
+            z_val = self.validate_data(z)
+            y = hdul[5].data
+            y_val = self.validate_data(y)
+
+
+            return np.stack([g_val, r_val, i_val, z_val, y_val], axis=0)  # (5, H, W)
 
         finally:
             hdul.close()
@@ -504,16 +532,16 @@ class StretchPipeline:
         """Apply the three stretch methods and return stacked channels."""
         
         # Apply your current 2nd try stretches
-        g_asinh = self.stretch_methods.asinh_stretch_ds9(data[0], percent=99)
-        r_asinh = self.stretch_methods.asinh_stretch_ds9(data[1], percent=99)
-        i_asinh = self.stretch_methods.asinh_stretch_ds9(data[2], percent=99)
+        r_asinh = self.stretch_methods.asinh_stretch_ds9(data[0], percent=99)
+        i_asinh = self.stretch_methods.asinh_stretch_ds9(data[1], percent=99)
+        z_asinh = self.stretch_methods.asinh_stretch_ds9(data[2], percent=99)
         
         
         # Validate shapes
-        assert g_asinh.shape == r_asinh.shape == i_asinh.shape 
+        assert r_asinh.shape == i_asinh.shape == z_asinh.shape 
 
         # Stack and move axis for torchvision compatibility
-        img = np.stack([g_asinh, r_asinh, i_asinh])
+        img = np.stack([r_asinh, i_asinh, z_asinh])
         img = np.moveaxis(img, 0, -1)  # (3, H, W) -> (H, W, 3)
         
         return img
@@ -562,24 +590,10 @@ class EnhancedStretchPipeline:
             img = np.stack([vis_mtf, vis_asinh_low, vis_asinh_high])
             img = np.moveaxis(img, 0, -1)
             
-        elif self.num_channels == 6:
-            # New 6-channel implementation
-            img = self.channel_processor.process_six_channels(data)
-            
-        
-        elif self.num_channels == 9:
-            # New 6-channel implementation
-            img = self.channel_processor.process_nine_channels(data)
-        
-        elif self.num_channels == 'all' or (isinstance(self.num_channels, int) and self.num_channels > 9):
-            img_all = self.channel_processor.process_all_channels(data)  # (H,W,C_all)
-            if isinstance(self.num_channels, int):
-                # keep first K deterministically
-                C_keep = min(self.num_channels, img_all.shape[-1])
-                img = img_all[..., :C_keep]
-            else:
-                img = img_all
-            
+        elif self.num_channels == 5:
+            # New 5-channel implementation
+            img = self.channel_processor.process_five_channels(data)
+
         else:
             raise ValueError(f"Unsupported number of channels: {self.num_channels}")
         
@@ -587,202 +601,26 @@ class EnhancedStretchPipeline:
 
 # Add the OptimizedVISChannelProcessor class
 class OptimizedVISChannelProcessor:
-    """6-channel VIS-only processor with minimized redundancy."""
+    """5-channel VIS-only processor with minimized redundancy."""
     
     def __init__(self, stretch_methods):
         self.stretch_methods = stretch_methods
     
-    def faint_feature_enhancer(self, data, boost_scales=[1, 2, 4]):
-        """Channel 2: Maximizes visibility of faint features."""
-        data = np.nan_to_num(data)
-        enhanced = np.zeros_like(data)
-        
-        vmin = np.percentile(data, 0)
-        vmax = np.percentile(data, 99.5)
-        
-        if vmax - vmin < 1e-6:
-            vmax = vmin + 1e-6
-        
-        min_value = np.min(data)
-        max_value = np.max(data)
-        # Simple linear stretch - preserve the natural range
-        # stretched = (data - vmin) / (vmax - vmin)
-        stretched = (data - min_value) / (max_value - min_value)
-        vmax = np.percentile(stretched, 99.9)
-        vmin = np.percentile(stretched, 1)
-        stretched = np.clip(stretched, vmin, vmax)  # Ensure within [0, 1]
-        
-        for scale in boost_scales:
-            smoothed = gaussian_filter(stretched, sigma=scale)
-            detail = stretched - smoothed
-            brightness_threshold = np.percentile(smoothed, 90)
-            faint_mask = smoothed < brightness_threshold
-            amplification = np.where(faint_mask, 10 / scale, 0.5 / scale)
-            enhanced += detail * amplification
-        
-        result = data + enhanced
-        # return self.robust_normalize(result, lower_p=1, upper_p=99)
-        # return self.outlier_robust_normalize(result)
-        return result
-    
-    def structure_boundary_enhancer(self, data, edge_scales=[0.5, 1, 2]):
-        """Channel 3: Emphasizes structural boundaries."""
-        data = np.nan_to_num(data)
-        edge_responses = []
-        vmax = np.percentile(data, 99.5)
-        vmin = np.percentile(data, 1)
-        data = np.clip(data, vmin, vmax)
-        # # apply asinh stretch
-        # beta = 1
-        # data = np.arcsinh(beta * data) / np.arcsinh(beta)
-        
-        for sigma in edge_scales:
-            smoothed = gaussian_filter(data, sigma=sigma)
-            grad_x = sobel(smoothed, axis=0)
-            grad_y = sobel(smoothed, axis=1)
-            edge_mag = np.sqrt(grad_x**2 + grad_y**2)
-            edge_responses.append(edge_mag)
-        
-        combined_edges = np.zeros_like(data)
-        weights = [0.3, 0.5, 0.2]
-        
-        for edge_resp, weight in zip(edge_responses, weights):
-            combined_edges += weight * edge_resp
-        
-        edge_norm = combined_edges / (np.percentile(combined_edges, 99) + 1e-8)
-        # print(f"[INFO] Edge norm max: {edge_norm.max()}, min: {edge_norm.min()}")
-        # edge_norm = np.clip(edge_norm, 0, edge_norm.max())
-        enhanced = data + 0.6 * edge_norm * data
-        
-        # return self.robust_normalize(enhanced)
-        # return self.outlier_robust_normalize(enhanced)
-        return enhanced
-    
-    def apply_ds9_stretch(self, data, pmin=1, pmax=99, bias=0.5, contrast=1, stretch='linear', stretch_param=None, output_range=(0, 1)):
-        """
-        Apply DS9-style stretch directly to a numpy array.
-        
-        Parameters:
-        -----------
-        data : np.array
-            Input image data
-        pmin, pmax : float
-            Percentiles for determining vmin/vmax (default: 1, 99)
-        bias : float
-            Bias parameter [0, 1] (default: 0.5)
-        contrast : float
-            Contrast parameter [0, +inf] (default: 1)
-        stretch : str
-            Stretch type: 'linear', 'sqrt', 'power', 'log', 'asinh', 'sinh', 'squared'
-        stretch_param : float
-            Parameter for power, log, and asinh stretches
-        output_range : tuple
-            Output range for stretched data (default: (0, 1))
-        
-        Returns:
-        --------
-        np.array
-            Stretched image data
-        """
-        
-        # Handle NaN values
-        finite_mask = np.isfinite(data)
-        if not finite_mask.any():
-            return np.full_like(data, output_range[0])
-        
-        # substitute 0 to nan
-        data = np.where(finite_mask, data, 0)
+    def process_five_channels(self, data):
+        """Process VIS data into 5 optimized channels."""
 
-        # Create the stretch function
-        if stretch == 'linear':
-            stretch_func = astrovi.LinearStretch()
-        elif stretch == 'sqrt':
-            stretch_func = astrovi.SqrtStretch()
-        elif stretch == 'power':
-            if stretch_param is None:
-                raise ValueError("stretch_param must be provided for power stretch.")
-            stretch_func = astrovi.PowerStretch(stretch_param)
-        elif stretch == 'log':
-            if stretch_param is None:
-                stretch_param = 1000
-            stretch_func = astrovi.LogStretch(stretch_param)
-        elif stretch == 'asinh':
-            if stretch_param is None:
-                stretch_param = 0.1
-            stretch_func = astrovi.AsinhStretch(stretch_param)
-        elif stretch == 'sinh':
-            if stretch_param is None:
-                stretch_param = 1./3.
-            stretch_func = astrovi.SinhStretch(stretch_param)
-        elif stretch == 'squared':
-            stretch_func = astrovi.SquaredStretch()
-        else:
-            raise ValueError(f'Unknown stretch: {stretch}.')
-        
-        # Apply bias and contrast
-        composite_stretch = astrovi.CompositeStretch(
-            stretch_func, astrovi.ContrastBiasStretch(contrast, bias)
-        )
-        
-        # Normalize data to [0, 1] range first
-        # data_normalized = np.clip((data - vmin) / (vmax - vmin), 0, 1)
-        # print(f"[INFO] minval: {minval}, maxval: {maxval} for pmin: {pmin}, pmax: {pmax}")  
-        
-        # Apply the stretch
-        stretched_data = composite_stretch(data)
-        # Calculate percentiles for vmin/vmax
-        # vmin, vmax = np.percentile(finite_data, [pmin, pmax])
-        vmax_stretched = np.percentile(stretched_data, pmax)
-        vmin_stretched = np.percentile(stretched_data, pmin)
-        # print(f"[INFO] vmin: {vmin}, vmax: {vmax}, vmax stretched: {vmax_stretched}")
-        result = np.clip(stretched_data, vmin_stretched, vmax_stretched)  # Ensure within [0, 1]
-        # minval = np.min(result)
-        # maxval = np.max(result)
-        # result = (result - minval) / (maxval - minval)
-        # # Scale to desired output range
-        # output_min, output_max = output_range
-        # result = stretched_data * (output_max - output_min) + output_min
-        
-        # Handle NaN values in output
-        result = np.where(finite_mask, result, np.nan)
-        
-        return result
-    
-    def process_six_channels(self, data):
-        """Process VIS data into 6 optimized channels."""
-        # ch1 = self.apply_ds9_stretch(data, pmax=99.5, bias=0.5, contrast=1, stretch='power', stretch_param=2, output_range=(0, 1)) # 6ch pow
-        ch1 = self.stretch_methods.gradient_enhanced_stretch(data, alpha=0.3) # 6ch 2ndtry
-        ch2 = self.stretch_methods.asinh_stretch_ds9(data, percent=99)
-        ch3 = self.stretch_methods.optimized_adaptive_stretch(data, clip_limits=[0.1, 0.5, 1])
-        
-        # ch4 = self.stretch_methods.gradient_enhanced_stretch(data, alpha=0.3)
-        ch4 = self.apply_ds9_stretch(data, pmax=99.5, bias=0.5, contrast=1, stretch='log', stretch_param=None, output_range=(0, 1))
-        ch5 = self.structure_boundary_enhancer(data)
-        ch6 = self.faint_feature_enhancer(data)
-        
-        
-        
-        channels = np.stack([ch1, ch2, ch3, ch4, ch5, ch6])
-        img = np.moveaxis(channels, 0, -1)  # (6, H, W) -> (H, W, 6)
+        # Apply your current 2nd try stretches
+        g_asinh = self.stretch_methods.asinh_stretch_ds9(data[0], percent=99)
+        r_asinh = self.stretch_methods.asinh_stretch_ds9(data[1], percent=99)
+        i_asinh = self.stretch_methods.asinh_stretch_ds9(data[2], percent=99)
+        z_asinh = self.stretch_methods.asinh_stretch_ds9(data[3], percent=99)
+        y_asinh = self.stretch_methods.asinh_stretch_ds9(data[4], percent=99)
+
+        channels = np.stack([r_asinh, i_asinh, z_asinh, g_asinh, y_asinh])
+        img = np.moveaxis(channels, 0, -1)  # (5, H, W) -> (H, W, 5)
         return img
     
-    def process_nine_channels(self, data):
-        """Process VIS data into 6 optimized channels."""
-        ch1 = self.conservative_photometric_stretch(data)
-        ch2 = self.faint_feature_enhancer(data)
-        ch3 = self.pure_edge_detector(data)  # Use pure edge map
-        ch4 = self.apply_ds9_stretch(data, pmax=99.5, bias=0.5, contrast=1, stretch='log', stretch_param=None, output_range=(0, 1))
-        ch5 = self.apply_ds9_stretch(data, pmax=99.5, bias=0.5, contrast=1, stretch='power', stretch_param=2, output_range=(0, 1))
-        ch6 = self.apply_ds9_stretch(data, pmax=99.5, bias=0.5, contrast=1, stretch='sinh', stretch_param=None, output_range=(0, 1))
-        ch7 = self.stretch_methods.gradient_enhanced_stretch(data, alpha=0.3)
-        ch8 = self.stretch_methods.optimized_adaptive_stretch(data, clip_limits=[0.1, 0.5, 1])
-        ch9 = self.stretch_methods.asinh_stretch_ds9(data, percent=99)
-        
-
-        channels = np.stack([ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9])
-        img = np.moveaxis(channels, 0, -1)  # (9, H, W) -> (H, W, 9)
-        return img
-
+    
    # Add ChannelAnalysisTools class
 
 class ChannelAnalysisTools:
@@ -1122,7 +960,7 @@ def create_dataloaders(config):
 
 
 # Helper function to create datasets with different channel configurations
-def create_multichannel_dataloaders(config, num_channels=6):
+def create_multichannel_dataloaders(config, num_channels=5):
     """Create dataloaders with configurable number of channels."""
     
     print(f'[INFO] Creating {num_channels}-channel dataloaders...')
@@ -1172,7 +1010,7 @@ def create_multichannel_dataloaders(config, num_channels=6):
 
 
 
-def compute_6channel_statistics(config, sample_size=None, save_results=True):
+def compute_5channel_statistics(config, sample_size=None, save_results=True):
     """
     Compute mean and standard deviation for each channel in the multi-channel dataset.
     
@@ -1191,7 +1029,7 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
         config=config,
         csv_path=config.DATA_CSV,
         transforms=None,  # No transforms to get raw stretched data
-        num_channels=6
+        num_channels=5
     )
     
     if sample_size is None:
@@ -1202,10 +1040,10 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
     print(f"[INFO] Using {sample_size} samples from {len(dataset)} total samples")
     
     # Initialize accumulators for computing statistics
-    channel_sums = np.zeros(6)
-    channel_squared_sums = np.zeros(6)
-    channel_mins = np.full(6, np.inf)
-    channel_maxs = np.full(6, -np.inf)
+    channel_sums = np.zeros(5)
+    channel_squared_sums = np.zeros(5)
+    channel_mins = np.full(5, np.inf)
+    channel_maxs = np.full(5, -np.inf)
     total_pixels_per_channel = 0
     
     # Process samples in batches to avoid memory issues
@@ -1234,8 +1072,8 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
                 
                 # Convert to tensor format if needed
                 if isinstance(img, np.ndarray):
-                    if img.shape[-1] == 6:  # (H, W, 6)
-                        img = np.transpose(img, (2, 0, 1))  # -> (6, H, W)
+                    if img.shape[-1] == 5:  # (H, W, 5)
+                        img = np.transpose(img, (2, 0, 1))  # -> (5, H, W)
 
                 batch_data.append(img)
                 
@@ -1250,7 +1088,7 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
         batch_array = np.array(batch_data)  # Shape: (batch_size, 9, H, W)
         
         # Update statistics for each channel
-        for ch in range(6):
+        for ch in range(5):
             channel_data = batch_array[:, ch, :, :].flatten()
             
             # Update sums
@@ -1272,12 +1110,11 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
     
     # Channel names for reference
     channel_names = [
-        'Grad.Enhanced', # 'Pow_Stretch',
-        'Asinh_Stretch',
-        'Optimized_Adaptive',
-        'Gradient_Enhanced-LogDs9',
-        'Pure Edge det.', #'Structure_Boundary',
-        'Faint_Feature_Enhanced'
+        'g asinh',
+        'r asinh',
+        'i asinh',
+        'z asinh',
+        'y asinh'
     ]
     
     # Create results dictionary
@@ -1311,14 +1148,14 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
     print("\n" + "-"*60)
     print("FOR CONFIG.PY - Copy these values:")
     print("-"*60)
-    print("MEAN_6CH = [", end="")
+    print("MEAN = [", end="")
     for i, mean in enumerate(channel_means):
         if i > 0:
             print(", ", end="")
         print(f"{mean:.6f}", end="")
     print("]")
     
-    print("STD_6CH  = [", end="")
+    print("STD  = [", end="")
     for i, std in enumerate(channel_stds):
         if i > 0:
             print(", ", end="")
@@ -1328,7 +1165,7 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
     # Save results to file
     if save_results:
         import json
-        output_file = os.path.join(config.ROOT, 'channel_statistics_6ch_2ndtry.json')
+        output_file = os.path.join(config.ROOT, 'channel_statistics_5ch_asinh.json')
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"\n[INFO] Results saved to: {output_file}")
@@ -1342,7 +1179,7 @@ def compute_6channel_statistics(config, sample_size=None, save_results=True):
             'Min': channel_mins,
             'Max': channel_maxs
         })
-        csv_file = os.path.join(config.ROOT, 'channel_statistics_6ch_2ndtry.csv')
+        csv_file = os.path.join(config.ROOT, 'channel_statistics_5ch_asinh.csv')
         df_stats.to_csv(csv_file, index=False)
         print(f"[INFO] CSV saved to: {csv_file}")
     
@@ -1405,12 +1242,12 @@ def compute_3channel_statistics(config, sample_size=None, save_results=True):
                 
                 # Load raw data and apply stretches
                 vis = data_loader.load_data(img_path)
-                img = dataset.stretch_pipeline.apply_stretches(vis)
+                img = dataset.stretch_pipeline.asinh_filters(vis)
                 
-                # # Convert to tensor format if needed
-                # if isinstance(img, np.ndarray):
-                #     if img.shape[-1] == 3:  # (H, W, 3)
-                #         img = np.transpose(img, (2, 0, 1))  # -> (3, H, W)
+                # Convert to tensor format if needed
+                if isinstance(img, np.ndarray):
+                    if img.shape[-1] == 3:  # (H, W, 3)
+                        img = np.transpose(img, (2, 0, 1))  # -> (3, H, W)
 
                 batch_data.append(img)
                 
@@ -1525,7 +1362,7 @@ def compute_3channel_statistics(config, sample_size=None, save_results=True):
 if __name__ == "__main__":
     
     # Compute statistics for 9-channel dataset
-    compute_stats = True
+    compute_stats = False
     
     if compute_stats:
         print("\n[INFO] Computing channel statistics...")
@@ -1533,10 +1370,36 @@ if __name__ == "__main__":
         # Choose one of these options:
         
         # Option 1: Fast computation with subset of samples
-        stats_fast = compute_3channel_statistics(config, sample_size=None, save_results=True)
-        # stats_fast = compute_all_channel_statistics(config, num_channels='all', sample_size=3000, save_results=True, out_prefix='channel_statistics')
+        # stats_fast = compute_5channel_statistics(config, sample_size=500, save_results=True)
+        stats_fast = compute_3channel_statistics(config, sample_size=30000, save_results=True)
         print("\n[INFO] Fast statistics computed.")
+    
+    
+    # # Test 5-channel implementation
+    # print("[INFO] Testing 5-channel dataset...")
+
+    # # Create 5-channel dataset
+    # dataset_5ch = GGSL_Dataset_MultiChannel(
+    #     config=config, 
+    #     csv_path=config.DATA_CSV, 
+    #     transforms=get_transform(train=False),
+    #     num_channels= 5
         
+    # )
+    # # plot the first 5-channel image
+    # sample_img, sample_label = dataset_5ch[4] 
+    # print(f"5-channel sample shape: {sample_img.shape}")
+    # print(f"Sample label: {sample_label}")
+    # plt.figure(figsize=(12, 6))
+    # for i in range(5):
+    #     plt.subplot(1, 5, i + 1)
+    #     plt.imshow(sample_img[i, :, :], cmap='viridis')
+    #     plt.title(f'Channel {i+1}')
+    #     plt.colorbar()  
+    #     plt.axis('off')
+    # plt.tight_layout()
+    # plt.savefig('test.png', dpi=300)
+    # plt.show()
     # Test 3-channel implementation
     print("[INFO] Testing 3-channel dataset...")
 
@@ -1561,20 +1424,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig('test.png', dpi=300)
     plt.show()
-    # for i in range(len(dataset_6ch)):
-    #     sample_img, sample_label = dataset_6ch[i]
-    #     print(f"6-channel sample shape: {sample_img.shape}")
-    #     print(f"Sample label: {sample_label}")
-    #     plt.figure(figsize=(9, 6))
-    #     for j in range(6):
-    #         plt.subplot(3, 3, j + 1)
-    #         plt.imshow(sample_img[j, :, :], cmap='viridis')
-    #         plt.title(f'Channel {j+1}')
-    #         plt.colorbar()  
-    #         plt.axis('off')
-    #     plt.tight_layout()
-    #     plt.savefig(f'/dati4/mfogliardi/training/ggsl/lo_zibaldone/candidates/ggsl_6ch_field{i}.png', dpi=300)
-    # # plt.show()
+    
     
     
     
