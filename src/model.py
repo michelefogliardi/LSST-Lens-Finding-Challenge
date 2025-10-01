@@ -207,7 +207,9 @@ def get_model_instance_segmentation(config):
     
     elif config.MODEL == 'zoobot':
         # Load the Zoobot encoder with its classifier
-        model = timm.create_model('hf_hub:mwalmsley/zoobot-encoder-convnext_base', pretrained=True, num_classes=config.NUM_CLASSES)
+        regression_mode = getattr(config, "USE_REGRESSION_TARGETS", False)
+        model = timm.create_model('hf_hub:mwalmsley/zoobot-encoder-convnext_base', pretrained=True, 
+                                  num_classes=config.num_classes if not regression_mode else 26)
         
         # Print the encoder summary
         
@@ -226,13 +228,14 @@ def get_model_instance_segmentation(config):
             def __init__(self, num_in_ch: int, num_classes: int,
                          use_pretrained: bool = True,
                          init_mode: str = "identity_first3",
-                         backbone_ckpt: str = None):
+                         backbone_ckpt: str = None,
+                         regression_mode: bool = False):
                 super().__init__()
                 # Load Zoobot ConvNeXt-base backbone via timm (3-ch)
                 self.backbone = timm.create_model(
                     'hf_hub:mwalmsley/zoobot-encoder-convnext_base',
                     pretrained=use_pretrained,
-                    num_classes=num_classes
+                    num_classes=num_classes if not regression_mode else 26  # 0: no head
                 )
                 # Expose/alias classifier head for optimizer param groups
                 # timm ConvNeXt uses .head as the classifier; create .fc alias
@@ -273,7 +276,8 @@ def get_model_instance_segmentation(config):
             num_classes=config.NUM_CLASSES,
             use_pretrained=getattr(config, "USE_PRETRAINED", True),
             init_mode=getattr(config, "ADAPTER_INIT", "identity_first3"),
-            backbone_ckpt=getattr(config, "BACKBONE_CKPT", None)
+            backbone_ckpt=getattr(config, "BACKBONE_CKPT", None),
+            regression_mode=getattr(config, "USE_REGRESSION_TARGETS", False)
         )
     
     elif config.MODEL == 'zoobot_6ch_pretrained':

@@ -25,6 +25,7 @@ import sys
 import ast
 from PIL import Image
 from typing import Dict, List, Optional, Tuple, Union
+import math
 import matplotlib as mpl
 import matplotlib.patches as patches
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -43,6 +44,12 @@ from scipy.ndimage import gaussian_filter1d
 import warnings
 import utils
 from io import BytesIO
+
+# Regression target selection utility (for lens parameter regression)
+try:
+    from lensfit.utilities.targets import RegressionTargetSelector
+except Exception:
+    RegressionTargetSelector = None  # type: ignore
 
 class config:
     ### Set random seed
@@ -64,10 +71,10 @@ class config:
     ### Set normalization type
     V_NORMALIZE = 'v3'
     
-    MEAN = [0.161927, 0.158478, 0.194141] 
-    STD  = [0.242562, 0.237847, 0.261295]  
-    # MEAN = [0.161927, 0.158478, 0.194141, 0.189002, 0.228415]
-    # STD  = [0.242562, 0.237847, 0.261295, 0.260213, 0.285261]
+    # MEAN = [0.161927, 0.158478, 0.194141] 
+    # STD  = [0.242562, 0.237847, 0.261295]  
+    MEAN = [0.161927, 0.158478, 0.194141, 0.189002, 0.228415]
+    STD  = [0.242562, 0.237847, 0.261295, 0.260213, 0.285261]
     ### Set paths
     ROOT      = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/'
     TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_test.csv'
@@ -75,8 +82,8 @@ class config:
     VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_valid.csv'
 
 
-    DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
-    
+    # DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/merged_train.csv'
+    DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_valid_lens_wparams_vdisp_imputed.csv'
     ### Set path to the code
     CODE_PATH = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/'
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
@@ -119,11 +126,25 @@ class config:
     ### If True, use the learning rate scheduler during training
     USE_SCHEDULER = True
     NUM_WORKERS = 0 # os.cpu_count()//2
+    ### Toggle: set True to train regression on lens parameters, False for classification
+    USE_REGRESSION_TARGETS = True
+    if USE_REGRESSION_TARGETS:
+        # Use enriched, imputed CSVs for regression:
+        TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_test_lens_wparams_vdisp_imputed.csv'
+        TRAIN_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_train_lens_wparams_vdisp_imputed.csv'
+        VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_valid_lens_wparams_vdisp_imputed.csv'
+    # Optional: replace (magnitude, PA) pairs for shear and source ellipticity with
+    # spin-2 components (e1 = m cos 2θ, e2 = m sin 2θ). This keeps dimensionality the same
+    # and avoids angle wrap/undefined PA at small magnitudes.
+    USE_SPIN2_COMPONENTS = True
 
 
 class GGSL_Dataset(torch.utils.data.Dataset):
     
-    def __init__(self, config, csv_path=None, transforms=None):
+    def __init__(self, config, csv_path=None, transforms=None, use_regression_targets: bool = False, 
+                 target_mean_override=None,
+                 target_std_override=None): 
+        self.config           = config
         self.root             = config.ROOT
         self.img_csv          = csv_path if csv_path is not None else config.DATA_CSV
         self.df_cutouts       = pd.read_csv(self.img_csv)
@@ -133,10 +154,139 @@ class GGSL_Dataset(torch.utils.data.Dataset):
         self.mean_value      = config.MEAN
         self.std_value       = config.STD
         self.num_channels     = 3  # Default to 3 channels (can be modified later)
+        # Target mode
+        self.use_regression_targets = bool(use_regression_targets)
+        self.target_selector = None
+        if self.use_regression_targets:
+            if RegressionTargetSelector is None:
+                raise ImportError("RegressionTargetSelector not available. Ensure lensfit.utilities.targets is importable.")
+            # Build selector based on current CSV columns
+            self.target_selector = RegressionTargetSelector(columns=self.df_cutouts.columns, nan_policy="fill_zero")
+            # Build default target normalization (fallback to fixed stats)
+            # Fixed stats for 26-dim target vector (degrees for PAs)
+            _MEAN_VALUES = [
+                0.7235545249120725, 22.992973300751967, 21.76841234943388,
+                20.788510816014234, 20.270878982794482, 19.97453734051518,
+                0.5561474218208695, 89.73713018596483, 0.9105003656052448,
+                0.01944653732133647, 90.45301754974803, 0.005385774134640611,
+                0.05553213360122507, 24.76233310753724, 24.452480979404548,
+                24.284612879488638, 24.164868581928957, 24.06530881843601,
+                2.3977920172199854, 0.533820041978406, 90.13712109054137,
+                0.10943322965898476, 0.5395661453094581, 89.84061511861319,
+                0.6348490964888803, 241.04461965879312,
+            ]
+            _STD_VALUES = [
+                0.26596412306423883, 1.1606409061133536, 1.2772269867545272,
+                1.1710854767125805, 1.0403615937477693, 0.944560285025306,
+                0.2994803683600868, 51.94540125277479, 0.38913281578431314,
+                0.018227255475347807, 52.06178657319362, 0.5446498644352256,
+                0.5324682016575858, 0.8730120915021825, 0.7791696785615215,
+                0.758931610287011, 0.858363388505483, 1.0080145389223178,
+                0.8103747129938357, 0.2134390309676792, 51.940001955051166,
+                0.06545149912815854, 0.2902513960637833, 51.94155293425428,
+                0.19205509151400202, 54.874332342582896,
+            ]
+            # Optionally switch to spin-2 components for certain pairs
+            self.spin2_pairs = {}
+            if getattr(self.config, 'USE_SPIN2_COMPONENTS', False):
+                try:
+                    self.spin2_pairs = infer_spin2_pairs(self.img_csv)
+                except Exception as e:
+                    print(f"[WARN] Could not infer spin-2 pairs: {e}")
+            # Prepare mean/std tensors; if spin-2 enabled, estimate stats for the affected indices
+            # Prepare mean/std tensors; if spin-2 enabled, estimate stats for the affected indices
+            mean_arr = _MEAN_VALUES.copy()
+            std_arr  = _STD_VALUES.copy()
+            
+            if getattr(self.config, 'USE_SPIN2_COMPONENTS', False) and self.spin2_pairs:
+                # Override normalization stats if provided (for val/test)
+                if target_mean_override is not None and target_std_override is not None:
+                    self.target_mean = target_mean_override.clone()
+                    self.target_std = target_std_override.clone()
+                    print(f"[INFO] Using provided normalization stats (not re-estimating)")
+                else:
+                    # Estimate spin-2 stats from data
+                    try:
+                        means_over, stds_over = self._estimate_spin2_stats(sample_size=min(30000, len(self.df_cutouts)))
+                        print(f"[INFO] Spin-2 stats estimated as means: {means_over}, stds: {stds_over}")
+                        for idx, m in means_over.items():
+                            if 0 <= idx < len(mean_arr):
+                                mean_arr[idx] = m
+                        for idx, s in stds_over.items():
+                            if 0 <= idx < len(std_arr):
+                                std_arr[idx] = max(s, 1e-6)
+                    except Exception as e:
+                        print(f"[WARN] Spin-2 stats estimation failed: {e}. Falling back to fixed stats for unaffected dims.")
+                    
+                    self.target_mean = torch.tensor(mean_arr, dtype=torch.float32)
+                    self.target_std  = torch.tensor(std_arr, dtype=torch.float32)
+            else:
+                # No spin-2 mode or override provided
+                self.target_mean = torch.tensor(mean_arr, dtype=torch.float32)
+                self.target_std  = torch.tensor(std_arr, dtype=torch.float32)
+        
+        
+        
         
         # Initialize pipeline components
         self.data_loader_factory = DataLoaderFactory()
         self.stretch_pipeline = StretchPipeline(self)
+
+    # -------------------------- Spin-2 utilities --------------------------- #
+    def _estimate_spin2_stats(self, sample_size: int = 2000) -> Tuple[Dict[int, float], Dict[int, float]]:
+        """Estimate mean/std for target dims impacted by spin-2 conversion.
+        Returns dicts keyed by affected indices (both e1 and e2 positions).
+        """
+        means: Dict[int, float] = {}
+        sqs: Dict[int, float] = {}
+        cnt = 0
+        if not getattr(self.config, 'USE_SPIN2_COMPONENTS', False) or not getattr(self, 'spin2_pairs', None):
+            return means, {}
+
+        # Initialize accumulators for indices in spin2 pairs
+        indices_to_track = []
+        for _, (i_mag, i_pa) in self.spin2_pairs.items():
+            indices_to_track.extend([i_mag, i_pa])
+        indices_to_track = sorted(set(i for i in indices_to_track if i is not None))
+        for i in indices_to_track:
+            means[i] = 0.0
+            sqs[i] = 0.0
+
+        # Sample rows and accumulate spin-2 converted values
+        rng = range(min(sample_size, len(self.df_cutouts)))
+        for ridx in rng:
+            try:
+                row_dict = self.df_cutouts.iloc[ridx].to_dict()
+                vec = self.target_selector.vectorize_mapping(row_dict)  # type: ignore[union-attr]
+                t = torch.tensor(vec, dtype=torch.float32)
+                # Convert in-place to spin-2 for the tracked pairs
+                for _, (i_mag, i_pa) in self.spin2_pairs.items():
+                    if 0 <= i_mag < t.numel() and 0 <= i_pa < t.numel():
+                        m = float(t[i_mag].item())
+                        theta = float(t[i_pa].item())
+                        e1, e2 = spin2_components(m, theta)
+                        t[i_mag] = e1
+                        t[i_pa] = e2
+                # Accumulate stats
+                for i in indices_to_track:
+                    v = float(t[i].item())
+                    means[i] += v
+                    sqs[i] += v * v
+                cnt += 1
+            except Exception:
+                continue
+
+        if cnt == 0:
+            return means, {i: 1.0 for i in indices_to_track}
+
+        stds: Dict[int, float] = {}
+        for i in indices_to_track:
+            m = means[i] / cnt
+            var = max(sqs[i] / cnt - m * m, 1e-12)
+            means[i] = m
+            stds[i] = math.sqrt(var)
+
+        return means, stds
 
     #--------------------------------------------------------------------------#
     
@@ -376,9 +526,28 @@ class GGSL_Dataset(torch.utils.data.Dataset):
             # img = self.stretch_pipeline.mtf_filters(data)
             img = self.stretch_pipeline.apply_stretches(data) # 5CH
             
-            # Get target
-            obj_class = self.df_cutouts.iloc[idx,1]
-            target = torch.as_tensor(obj_class, dtype=torch.uint8)
+            # Choose target: classification (default) or regression vector
+            if getattr(self, "use_regression_targets", False):
+                # Regression: vectorize all desired columns except identifiers
+                row_dict = self.df_cutouts.iloc[idx].to_dict()
+                target_vec = self.target_selector.vectorize_mapping(row_dict)  # type: ignore[union-attr]
+                target = torch.tensor(target_vec, dtype=torch.float32)
+                # Optionally convert (m, PA) -> (e1, e2) for configured spin-2 pairs
+                if getattr(self.config, 'USE_SPIN2_COMPONENTS', False) and getattr(self, 'spin2_pairs', None):
+                    for key, (i_mag, i_pa) in self.spin2_pairs.items():
+                        if 0 <= i_mag < target.numel() and 0 <= i_pa < target.numel():
+                            m = float(target[i_mag].item())
+                            theta = float(target[i_pa].item())
+                            e1, e2 = spin2_components(m, theta)
+                            target[i_mag] = torch.tensor(e1, dtype=target.dtype)
+                            target[i_pa] = torch.tensor(e2, dtype=target.dtype)
+                # # Normalize target vector
+                # target = (target - MEAN) / STD
+            
+            else:
+                # Classification: keep original behavior
+                obj_class = self.df_cutouts.iloc[idx,1]
+                target = torch.as_tensor(obj_class, dtype=torch.uint8)
             
             
             # Apply normalization
@@ -388,6 +557,10 @@ class GGSL_Dataset(torch.utils.data.Dataset):
             # Apply transforms if specified
             if self.transforms is not None:
                 img, target = self.transforms(img, target)
+            
+            # Normalize regression targets AFTER transforms to avoid label-aug mismatch
+            if getattr(self, "use_regression_targets", False):
+                target = (target - self.target_mean) / self.target_std
             
             return img, target
             
@@ -729,9 +902,17 @@ class ChannelAnalysisTools:
 class GGSL_Dataset_MultiChannel(GGSL_Dataset):
     """Enhanced GGSL Dataset with configurable multi-channel support."""
     
-    def __init__(self, config, csv_path=None, transforms=None, num_channels=3):
-        super().__init__(config, csv_path, transforms)
+    def __init__(self, config, csv_path=None, transforms=None, num_channels=3, use_regression_targets: Optional[bool] = None,
+                 target_mean_override=None,
+                 target_std_override=None):
+        # If not explicitly provided, inherit from config.USE_REGRESSION_TARGETS
+        if use_regression_targets is None:
+            use_regression_targets = getattr(config, 'USE_REGRESSION_TARGETS', False)
+        super().__init__(config, csv_path, transforms, use_regression_targets=use_regression_targets,
+                         target_mean_override=target_mean_override,
+                         target_std_override=target_std_override)
         self.num_channels = num_channels
+        
         
         # Replace stretch pipeline with enhanced version
         self.stretch_pipeline = EnhancedStretchPipeline(self, num_channels)
@@ -751,52 +932,222 @@ class GGSL_Dataset_MultiChannel(GGSL_Dataset):
 #     return Compose(transforms)
 
 
-def get_transform(train, apply_class_specific_aug=False):
+
+def infer_angle_indices(csv_path: str) -> List[int]:
+    """Return indices of PA targets in the selector's output vector."""
+    import pandas as pd, copy
+    wanted = ["ell_l_PA", "ell_m_PA", "ell_s_PA", "sh_PA", "shear_PA", "ell_s_pa", "sh_pa"]
+
+    df_head = pd.read_csv(csv_path, nrows=1)
+    sel = RegressionTargetSelector(columns=df_head.columns, nan_policy="fill_zero")
+
+    row = df_head.iloc[0].to_dict()
+    vec = sel.vectorize_mapping(row)
+    M = len(vec)
+
+    # Try attributes whose length must match the vector length
+    names = None
+    for attr in ["output_columns", "selected_columns", "feature_names", "columns", "names"]:
+        if hasattr(sel, attr):
+            cand = list(getattr(sel, attr))
+            if len(cand) == M:
+                names = cand
+                break
+
+    indices, found_names = [], []
+    if names is not None:
+        for w in wanted:
+            if w in names:
+                i = names.index(w)
+                if 0 <= i < M:
+                    indices.append(i)
+                    found_names.append(w)
+    else:
+        # Fallback: locate by perturbing a field and seeing which output index changes
+        base = vec
+        for w in wanted:
+            if w not in row:
+                continue
+            row2 = copy.deepcopy(row)
+            try:
+                row2[w] = float(row2[w]) + 1.234567  # degrees
+            except Exception:
+                continue
+            vec2 = sel.vectorize_mapping(row2)
+            diffs = [i for i,(a,b) in enumerate(zip(base, vec2)) if abs(a-b) > 1e-6]
+            if len(diffs) == 1 and 0 <= diffs[0] < M:
+                indices.append(diffs[0])
+                found_names.append(w)
+
+    # Ensure validity
+    indices = sorted(set([i for i in indices if 0 <= i < M]))
+    print(f"[INFO] Angle targets found: {found_names} at indices {indices} (target dim={M})")
+    return indices
+
+
+def spin2_components(magnitude: float, theta_deg: float) -> Tuple[float, float]:
+    """Return (e1, e2) for given magnitude and PA in degrees.
+    e1 = m cos(2θ), e2 = m sin(2θ). θ is 180°-periodic; using degrees for compatibility.
+    """
+    if magnitude is None or theta_deg is None:
+        return 0.0, 0.0
+    try:
+        theta_rad = math.radians(theta_deg)
+        c2 = math.cos(2.0 * theta_rad)
+        s2 = math.sin(2.0 * theta_rad)
+        return float(magnitude) * c2, float(magnitude) * s2
+    except Exception:
+        return 0.0, 0.0
+
+
+def infer_spin2_pairs(csv_path: str) -> Dict[str, Tuple[int, int]]:
+    """Infer (magnitude_index, pa_index) pairs for targets to be converted to spin-2.
+    EXTENDED VERSION: Detects ALL 4 ellipticity pairs:
+    - Lens ellipticity: (ell_l, ell_l_PA)
+    - Main ellipticity: (ell_m, ell_m_PA)
+    - Source ellipticity: (ell_s, ell_s_PA)
+    - Shear: (sh, sh_PA)
+    
+    Returns mapping keys: 'lens', 'main', 'source', 'shear' if found.
+    """
+    import copy
+    df_head = pd.read_csv(csv_path, nrows=1)
+    sel = RegressionTargetSelector(columns=df_head.columns, nan_policy="fill_zero")
+    row = df_head.iloc[0].to_dict()
+    vec = sel.vectorize_mapping(row)
+    M = len(vec)
+
+    # Try to get the selector's output names (preferred)
+    names = None
+    for attr in ["output_columns", "selected_columns", "feature_names", "columns", "names"]:
+        if hasattr(sel, attr):
+            cand = list(getattr(sel, attr))
+            if len(cand) == M:
+                names = cand
+                break
+
+    def idx_by_name(name: str) -> Optional[int]:
+        if names is None or name is None:
+            return None
+        try:
+            return names.index(name)
+        except ValueError:
+            return None
+
+    def idx_by_perturb(key: str, delta: float = 1e-3) -> Optional[int]:
+        """Find output index corresponding to CSV column `key` by perturbation."""
+        if key not in row:
+            return None
+        base_vec = vec
+        # Make a safe numeric perturbation
+        try:
+            v = float(row[key])
+        except Exception:
+            return None
+        # If NaN, skip
+        if v != v:  # NaN check
+            return None
+        row2 = copy.deepcopy(row)
+        row2[key] = v + delta
+        try:
+            vec2 = sel.vectorize_mapping(row2)
+        except Exception:
+            return None
+        diffs = [i for i, (a, b) in enumerate(zip(base_vec, vec2)) if abs(a - b) > 1e-6]
+        if len(diffs) == 1:
+            return diffs[0]
+        return None
+
+    def find_pair(mag_candidates: List[str], pa_candidates: List[str]) -> Optional[Tuple[int, int]]:
+        """Generic function to find (magnitude, PA) index pair."""
+        i_pa = None
+        for nm in pa_candidates:
+            i_pa = idx_by_name(nm)
+            if i_pa is not None:
+                break
+        if i_pa is None:
+            for key in pa_candidates:
+                i_pa = idx_by_perturb(key)
+                if i_pa is not None:
+                    break
+        
+        i_m = None
+        for nm in mag_candidates:
+            i_m = idx_by_name(nm)
+            if i_m is not None:
+                break
+        if i_m is None:
+            for key in mag_candidates:
+                i_m = idx_by_perturb(key)
+                if i_m is not None:
+                    break
+        
+        if i_m is not None and i_pa is not None:
+            return (i_m, i_pa)
+        return None
+
+    pairs: Dict[str, Tuple[int, int]] = {}
+
+    # 1. Lens ellipticity pair (NEW!)
+    lens_pair = find_pair(
+        mag_candidates=['ell_l', 'ell_lens', 'ellipticity_l'],
+        pa_candidates=['ell_l_PA', 'ell_lens_PA', 'ellipticity_l_PA', 'ell_l_pa']
+    )
+    if lens_pair:
+        pairs['lens'] = lens_pair
+
+    # 2. Main ellipticity pair (NEW!)
+    main_pair = find_pair(
+        mag_candidates=['ell_m', 'ell_main', 'ellipticity_m'],
+        pa_candidates=['ell_m_PA', 'ell_main_PA', 'ellipticity_m_PA', 'ell_m_pa']
+    )
+    if main_pair:
+        pairs['main'] = main_pair
+
+    # 3. Source ellipticity pair (existing)
+    source_pair = find_pair(
+        mag_candidates=['ell_s', 'ell_source', 'ellipticity_s'],
+        pa_candidates=['ell_s_PA', 'ell_source_PA', 'ellipticity_s_PA', 'ell_s_pa']
+    )
+    if source_pair:
+        pairs['source'] = source_pair
+
+    # 4. Shear pair (existing)
+    shear_pair = find_pair(
+        mag_candidates=['sh', 'shear'],
+        pa_candidates=['sh_PA', 'shear_PA', 'sh_pa']
+    )
+    if shear_pair:
+        pairs['shear'] = shear_pair
+
+    if pairs:
+        print(f"[INFO] Spin-2 pairs inferred (EXTENDED): {pairs}")
+        print(f"[INFO] Converting {len(pairs)} (magnitude, PA) pairs to (e1, e2) spin-2 components")
+    else:
+        print("[WARN] No spin-2 pairs could be inferred from CSV headers or perturbation.")
+    return pairs
+
+def get_transform(train, apply_class_specific_aug=False, angle_aware_augmentation=False, angle_indices: List[int] = None, spin2_mode: bool = False, e2_indices: Optional[List[int]] = None):
     transforms = []
     transforms.append(ToTensor())
     transforms.append(ConvertImageDtype(torch.float))
     if train:
         if apply_class_specific_aug:
-            # Apply stronger augmentations for class 1 (minority class)
-            transforms.append(ClassConditionalRandomHorizontalFlip(0.8, target_classes=[1]))
-            transforms.append(ClassConditionalRandomVerticalFlip(0.8, target_classes=[1]))
-            # Lighter augmentations for class 0 (majority class)
-            transforms.append(ClassConditionalRandomHorizontalFlip(0.3, target_classes=[0]))
-            transforms.append(ClassConditionalRandomVerticalFlip(0.3, target_classes=[0]))
+            # Class-conditional unified flips: at most one flip per image per sample
+            transforms.append(ClassConditionalUnifiedRandomFlip(0.8, target_classes=[1]))
+            transforms.append(ClassConditionalUnifiedRandomFlip(0.3, target_classes=[0]))
+        elif angle_aware_augmentation:
+            ai = angle_indices or []
+            if spin2_mode:
+                e2 = list(e2_indices or [])
+                ai_rest = [i for i in ai if i not in set(e2)]
+                transforms.append(UnifiedRandomFlip(0.5, angle_indices=ai_rest, e2_indices=e2, period=180.0))
+            else:
+                transforms.append(UnifiedRandomFlip(0.5, angle_indices=ai, e2_indices=[], period=180.0))
         else:
-            # Regular augmentations for all classes
-            transforms.append(RandomHorizontalFlip(0.5))
-            transforms.append(RandomVerticalFlip(0.5))
+            # Regular augmentation: at most one flip; no target updates needed
+            transforms.append(UnifiedRandomFlip(0.5))
     return Compose(transforms)
-
-# Add the class-conditional transform classes
-class ClassConditionalRandomHorizontalFlip(nn.Module):
-    """Apply horizontal flip only to specific classes."""
-    
-    def __init__(self, p=0.5, target_classes=[1]):
-        super().__init__()
-        self.p = p
-        self.target_classes = target_classes
-    
-    def forward(self, image: Tensor, target: Optional[Tensor] = None) -> Tuple[Tensor, Optional[Tensor]]:
-        if target is not None and target.item() in self.target_classes:
-            if torch.rand(1) < self.p:
-                image = F.hflip(image)
-        return image, target
-
-class ClassConditionalRandomVerticalFlip(nn.Module):
-    """Apply vertical flip only to specific classes."""
-    
-    def __init__(self, p=0.5, target_classes=[1]):
-        super().__init__()
-        self.p = p
-        self.target_classes = target_classes
-    
-    def forward(self, image: Tensor, target: Optional[Tensor] = None) -> Tuple[Tensor, Optional[Tensor]]:
-        if target is not None and target.item() in self.target_classes:
-            if torch.rand(1) < self.p:
-                image = F.vflip(image)
-        return image, target
 
 class Compose:
     """Composes several transforms together."""
@@ -872,6 +1223,136 @@ class RandomVerticalFlip(T.RandomVerticalFlip):
             
         return image, target
 
+# Add the class-conditional transform classes
+class ClassConditionalRandomHorizontalFlip(nn.Module):
+    """Apply horizontal flip only to specific classes."""
+    
+    def __init__(self, p=0.5, target_classes=[1]):
+        super().__init__()
+        self.p = p
+        self.target_classes = target_classes
+    
+    def forward(self, image: Tensor, target: Optional[Tensor] = None) -> Tuple[Tensor, Optional[Tensor]]:
+        if target is not None and target.item() in self.target_classes:
+            if torch.rand(1) < self.p:
+                image = F.hflip(image)
+        return image, target
+
+class ClassConditionalRandomVerticalFlip(nn.Module):
+    """Apply vertical flip only to specific classes."""
+    
+    def __init__(self, p=0.5, target_classes=[1]):
+        super().__init__()
+        self.p = p
+        self.target_classes = target_classes
+    
+    def forward(self, image: Tensor, target: Optional[Tensor] = None) -> Tuple[Tensor, Optional[Tensor]]:
+        if target is not None and target.item() in self.target_classes:
+            if torch.rand(1) < self.p:
+                image = F.vflip(image)
+        return image, target
+
+def _flip_pa_inplace(target: torch.Tensor, angle_indices: List[int], period: float = 180.0):
+    if target is None or not isinstance(target, torch.Tensor):
+        return target
+    if target.dtype not in (torch.float32, torch.float64):
+        return target  # classification labels unaffected
+    if target.ndim != 1 or len(angle_indices) == 0:
+        return target
+    vals = target[angle_indices]
+    target[angle_indices] = (period - vals) % period
+    return target
+
+class AngleAwareRandomHorizontalFlip(nn.Module):
+    def __init__(self, p=0.5, angle_indices: List[int] = None, period: float = 180.0):
+        super().__init__()
+        self.p = p
+        self.angle_indices = angle_indices or []
+        self.period = period
+
+    def forward(self, image: Tensor, target: Optional[Tensor] = None):
+        if torch.rand(1) < self.p:
+            image = F.hflip(image)
+            target = _flip_pa_inplace(target, self.angle_indices, self.period)
+        return image, target
+
+class AngleAwareRandomVerticalFlip(nn.Module):
+    def __init__(self, p=0.5, angle_indices: List[int] = None, period: float = 180.0):
+        super().__init__()
+        self.p = p
+        self.angle_indices = angle_indices or []
+        self.period = period
+
+    def forward(self, image: Tensor, target: Optional[Tensor] = None):
+        if torch.rand(1) < self.p:
+            image = F.vflip(image)
+            target = _flip_pa_inplace(target, self.angle_indices, self.period)
+        return image, target
+
+
+class UnifiedRandomFlip(nn.Module):
+    """Flip image at most once (horizontal OR vertical) and update targets in one go.
+    - If angle_indices provided: update angles via θ -> (period - θ) mod period
+    - If e2_indices provided: negate e2 at those indices
+    """
+    def __init__(self, p=0.5, angle_indices: Optional[List[int]] = None, e2_indices: Optional[List[int]] = None, period: float = 180.0):
+        super().__init__()
+        self.p = p
+        self.angle_indices = list(angle_indices or [])
+        self.e2_indices = list(e2_indices or [])
+        self.period = period
+
+    def forward(self, image: Tensor, target: Optional[Tensor] = None):
+        # With probability p, perform exactly one flip; choose H or V with 50/50 chance
+        if torch.rand(1) < self.p:
+            # choose exactly one flip direction (uniform among H/V)
+            if torch.rand(1) < 0.5:
+                image = F.hflip(image)
+            else:
+                image = F.vflip(image)
+            # update targets consistently
+            if target is not None and isinstance(target, torch.Tensor) and target.ndim == 1:
+                if len(self.angle_indices) > 0:
+                    target = _flip_pa_inplace(target, self.angle_indices, self.period)
+                if len(self.e2_indices) > 0:
+                    target[self.e2_indices] = -target[self.e2_indices]
+        return image, target
+
+class ClassConditionalUnifiedRandomFlip(nn.Module):
+    """Flip at most once and only for given target classes with probability p.
+    Optionally updates angle_indices and e2_indices simultaneously.
+    """
+    def __init__(self, p=0.5, target_classes: Optional[List[int]] = None, angle_indices: Optional[List[int]] = None, e2_indices: Optional[List[int]] = None, period: float = 180.0):
+        super().__init__()
+        self.p = p
+        self.target_classes = set(target_classes or [])
+        self.angle_indices = list(angle_indices or [])
+        self.e2_indices = list(e2_indices or [])
+        self.period = period
+
+    def forward(self, image: Tensor, target: Optional[Tensor] = None):
+        # If no target provided or not matching, no-op
+        if target is None or not isinstance(target, torch.Tensor):
+            return image, target
+        # For classification use-case: target is scalar class label tensor
+        label_val = int(target.item()) if target.ndim == 0 else None
+        if label_val is None or label_val not in self.target_classes:
+            return image, target
+        # Flip once with prob p
+        if torch.rand(1) < self.p:
+            if torch.rand(1) < 0.5:
+                image = F.hflip(image)
+            else:
+                image = F.vflip(image)
+            # Optional target updates if used with regression-like vectors
+            if target.ndim == 1 and target.dtype in (torch.float32, torch.float64):
+                if len(self.angle_indices) > 0:
+                    target = _flip_pa_inplace(target, self.angle_indices, self.period)
+                if len(self.e2_indices) > 0:
+                    target[self.e2_indices] = -target[self.e2_indices]
+        return image, target
+
+
 class RandomRotation(nn.Module):
     """Rotate the image by angle."""
     def __init__(self, degrees: float):
@@ -910,16 +1391,19 @@ def create_dataloaders(config):
     print('[INFO] Test CSV Dataset file:\n\t', str(config.TEST_DATA_CSV))
 
     # Use our dataset and defined transformations
+    # aug_for_train = not getattr(config, 'USE_REGRESSION_TARGETS', False)
     dataset_train = GGSL_Dataset(config=config,
-                                                csv_path=config.TRAIN_DATA_CSV, 
-                                             transforms=get_transform(train=True,
-                                                                      apply_class_specific_aug=True))
+                                 csv_path=config.TRAIN_DATA_CSV,
+                                 transforms=get_transform(train=True, apply_class_specific_aug=False),
+                                 use_regression_targets=config.USE_REGRESSION_TARGETS)
     dataset_valid = GGSL_Dataset(config=config,
-                                                csv_path=config.VALID_DATA_CSV,
-                                             transforms=get_transform(train=False))
+                                 csv_path=config.VALID_DATA_CSV,
+                                 transforms=get_transform(train=False),
+                                 use_regression_targets=config.USE_REGRESSION_TARGETS)
     dataset_test  = GGSL_Dataset(config=config,
-                                                csv_path=config.TEST_DATA_CSV,
-                                             transforms=get_transform(train=False))
+                                 csv_path=config.TEST_DATA_CSV,
+                                 transforms=get_transform(train=False),
+                                 use_regression_targets=config.USE_REGRESSION_TARGETS)
 
     # # Split the dataset in train, validation, and test set
     # train_perc    = 0.85 # 0.80
@@ -958,32 +1442,64 @@ def create_dataloaders(config):
 
     return data_loader_train, data_loader_valid, data_loader_test
 
-
 # Helper function to create datasets with different channel configurations
 def create_multichannel_dataloaders(config, num_channels=5):
     """Create dataloaders with configurable number of channels."""
     
     print(f'[INFO] Creating {num_channels}-channel dataloaders...')
-    
+    # Infer indices once from the train CSV to keep ordering consistent
+    angle_indices = infer_angle_indices(config.TRAIN_DATA_CSV) if getattr(config, "USE_REGRESSION_TARGETS", False) else []
+    # If spin-2 is enabled, compute which of the angle indices will become e2 after conversion
+    e2_indices = []
+    if getattr(config, 'USE_SPIN2_COMPONENTS', False):
+        try:
+            pairs = infer_spin2_pairs(config.TRAIN_DATA_CSV)
+            # in our encoding we put e1 at magnitude index and e2 at PA index
+            e2_indices = [pa for (_, pa) in pairs.values() if pa is not None]
+            # IMPORTANT: Remove e2 indices from angle_indices since they're no longer PAs after spin-2 conversion
+            angle_indices = [idx for idx in angle_indices if idx not in e2_indices]
+            print(f"[INFO] Spin-2 mode: {len(e2_indices)} PA indices converted to e2, {len(angle_indices)} angle indices remain as PAs")
+        except Exception as e:
+            print(f"[WARN] Could not compute e2 indices for spin-2: {e}")
+
     dataset_train = GGSL_Dataset_MultiChannel(
         config=config,
         csv_path=config.TRAIN_DATA_CSV, 
-        transforms=get_transform(train=True, apply_class_specific_aug=True),
-        num_channels=num_channels
+        transforms=get_transform(
+            train=True,
+            apply_class_specific_aug=False,
+            angle_aware_augmentation=config.USE_REGRESSION_TARGETS,
+            angle_indices=angle_indices,
+            spin2_mode=getattr(config, 'USE_SPIN2_COMPONENTS', False),
+            e2_indices=e2_indices,
+        ),
+        num_channels=num_channels,
+        use_regression_targets=config.USE_REGRESSION_TARGETS,
     )
     
+    # Extract train normalization stats
+    train_target_mean = dataset_train.target_mean.clone()
+    train_target_std = dataset_train.target_std.clone()
+    
+    # Build val/test with train stats (NO re-estimation)
     dataset_valid = GGSL_Dataset_MultiChannel(
         config=config,
         csv_path=config.VALID_DATA_CSV,
         transforms=get_transform(train=False),
-        num_channels=num_channels
+        num_channels=num_channels,
+        use_regression_targets=config.USE_REGRESSION_TARGETS,
+        target_mean_override=train_target_mean,  # ← 
+        target_std_override=train_target_std,     # ← 
     )
     
     dataset_test = GGSL_Dataset_MultiChannel(
         config=config,
         csv_path=config.TEST_DATA_CSV,
         transforms=get_transform(train=False),
-        num_channels=num_channels
+        num_channels=num_channels,
+        use_regression_targets=config.USE_REGRESSION_TARGETS,
+        target_mean_override=train_target_mean,  # ← 
+        target_std_override=train_target_std,     # ← 
     )
     
     print(f'[INFO] Train: {len(dataset_train)}, Valid: {len(dataset_valid)}, Test: {len(dataset_test)}')
@@ -1012,103 +1528,78 @@ def create_multichannel_dataloaders(config, num_channels=5):
 
 def compute_5channel_statistics(config, sample_size=None, save_results=True):
     """
-    Compute mean and standard deviation for each channel in the multi-channel dataset.
-    
-    Args:
-        config: Configuration object with dataset parameters
-        sample_size: Number of samples to use (None = use all samples)
-        save_results: Whether to save results to a file
-    
-    Returns:
-        Dictionary with statistics for each channel
+    Compute mean and standard deviation for each channel in the 5-channel dataset.
     """
-    print("[INFO] Computing channel statistics for 9-channel dataset...")
-    
-    # Create dataset without transforms to get raw normalized data
+    print("[INFO] Computing channel statistics for 5-channel dataset...")
+
+    # Create dataset without transforms to get raw stretched data
     dataset = GGSL_Dataset_MultiChannel(
         config=config,
         csv_path=config.DATA_CSV,
-        transforms=None,  # No transforms to get raw stretched data
-        num_channels=5
+        transforms=None,
+        num_channels=5,
+        use_regression_targets=getattr(config, 'USE_REGRESSION_TARGETS', False)
     )
-    
+
     if sample_size is None:
         sample_size = len(dataset)
     else:
         sample_size = min(sample_size, len(dataset))
-    
+
     print(f"[INFO] Using {sample_size} samples from {len(dataset)} total samples")
-    
-    # Initialize accumulators for computing statistics
+
     channel_sums = np.zeros(5)
     channel_squared_sums = np.zeros(5)
     channel_mins = np.full(5, np.inf)
     channel_maxs = np.full(5, -np.inf)
     total_pixels_per_channel = 0
-    
-    # Process samples in batches to avoid memory issues
+
     batch_size = 1000
     num_batches = (sample_size + batch_size - 1) // batch_size
-    
+
     print("[INFO] Processing samples...")
-    
     for batch_idx in tqdm(range(num_batches), desc="Computing statistics"):
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, sample_size)
-        
+
         batch_data = []
-        
-        # Load batch of samples
         for idx in range(start_idx, end_idx):
             try:
-                # Get sample (before z-normalization)
+                # Get path and loader
                 img_path = os.path.join(dataset.root, dataset.df_cutouts.iloc[idx, 0])
                 dataset_type = dataset._identify_dataset_type(img_path)
                 data_loader = dataset.data_loader_factory.create_loader(dataset_type)
-                
-                # Load raw data and apply stretches
+
+                # Load raw VIS data and apply 5-channel stretches
                 vis = data_loader.load_data(img_path)
                 img = dataset.stretch_pipeline.apply_stretches(vis)
-                
-                # Convert to tensor format if needed
-                if isinstance(img, np.ndarray):
-                    if img.shape[-1] == 5:  # (H, W, 5)
-                        img = np.transpose(img, (2, 0, 1))  # -> (5, H, W)
 
+                # Ensure channel-first for stats aggregation
+                if isinstance(img, np.ndarray) and img.shape[-1] == 5:
+                    img = np.transpose(img, (2, 0, 1))  # (5, H, W)
                 batch_data.append(img)
-                
             except Exception as e:
                 print(f"[WARNING] Failed to process sample {idx}: {e}")
                 continue
-        
+
         if not batch_data:
             continue
-            
-        # Convert batch to numpy array
-        batch_array = np.array(batch_data)  # Shape: (batch_size, 9, H, W)
-        
-        # Update statistics for each channel
+
+        batch_array = np.array(batch_data)  # (B, 5, H, W)
         for ch in range(5):
             channel_data = batch_array[:, ch, :, :].flatten()
-            
-            # Update sums
             channel_sums[ch] += np.sum(channel_data)
             channel_squared_sums[ch] += np.sum(channel_data ** 2)
-            
-            # Update min/max
             channel_mins[ch] = min(channel_mins[ch], np.min(channel_data))
             channel_maxs[ch] = max(channel_maxs[ch], np.max(channel_data))
-            
-            # Count pixels (same for all channels)
             if ch == 0:
                 total_pixels_per_channel += len(channel_data)
-    
-    # Compute final statistics
-    channel_means = channel_sums / total_pixels_per_channel
-    channel_vars = (channel_squared_sums / total_pixels_per_channel) - (channel_means ** 2)
-    channel_stds = np.sqrt(np.maximum(channel_vars, 0))  # Ensure non-negative
-    
-    # Channel names for reference
+
+    # Final stats
+    channel_means = channel_sums / max(total_pixels_per_channel, 1)
+    channel_vars = (channel_squared_sums / max(total_pixels_per_channel, 1)) - (channel_means ** 2)
+    channel_stds = np.sqrt(np.maximum(channel_vars, 0))
+
     channel_names = [
         'g asinh',
         'r asinh',
@@ -1116,8 +1607,7 @@ def compute_5channel_statistics(config, sample_size=None, save_results=True):
         'z asinh',
         'y asinh'
     ]
-    
-    # Create results dictionary
+
     results = {
         'means': channel_means.tolist(),
         'stds': channel_stds.tolist(),
@@ -1125,26 +1615,23 @@ def compute_5channel_statistics(config, sample_size=None, save_results=True):
         'maxs': channel_maxs.tolist(),
         'channel_names': channel_names,
         'total_samples_processed': sample_size,
-        'total_pixels_per_channel': total_pixels_per_channel
+        'total_pixels_per_channel': int(total_pixels_per_channel),
     }
-    
+
     # Print results
     print("\n" + "="*60)
-    print("CHANNEL STATISTICS RESULTS")
+    print("CHANNEL STATISTICS RESULTS (5ch)")
     print("="*60)
     print(f"Total samples processed: {sample_size}")
     print(f"Total pixels per channel: {total_pixels_per_channel}")
     print("\nPer-channel statistics:")
     print("-" * 60)
-    
     for i, name in enumerate(channel_names):
         print(f"Channel {i+1:2d} - {name:<25}: "
-              f"Mean={channel_means[i]:.6f}, "
-              f"Std={channel_stds[i]:.6f}")
-        print(f"{'':>30} "
-              f"Range=[{channel_mins[i]:.6f}, {channel_maxs[i]:.6f}]")
-    
-    # Print formatted arrays for easy copying to config
+              f"Mean={channel_means[i]:.6f}, Std={channel_stds[i]:.6f}")
+        print(f"{'':>30} Range=[{channel_mins[i]:.6f}, {channel_maxs[i]:.6f}]")
+
+    # Print arrays for config copy
     print("\n" + "-"*60)
     print("FOR CONFIG.PY - Copy these values:")
     print("-"*60)
@@ -1154,35 +1641,32 @@ def compute_5channel_statistics(config, sample_size=None, save_results=True):
             print(", ", end="")
         print(f"{mean:.6f}", end="")
     print("]")
-    
     print("STD  = [", end="")
     for i, std in enumerate(channel_stds):
         if i > 0:
             print(", ", end="")
         print(f"{std:.6f}", end="")
     print("]")
-    
-    # Save results to file
+
     if save_results:
         import json
         output_file = os.path.join(config.ROOT, 'channel_statistics_5ch_asinh.json')
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"\n[INFO] Results saved to: {output_file}")
-        
-        # Also save as CSV for easy viewing
+
         import pandas as pd
         df_stats = pd.DataFrame({
             'Channel': [f"Ch{i+1}_{name}" for i, name in enumerate(channel_names)],
             'Mean': channel_means,
             'Std': channel_stds,
             'Min': channel_mins,
-            'Max': channel_maxs
+            'Max': channel_maxs,
         })
         csv_file = os.path.join(config.ROOT, 'channel_statistics_5ch_asinh.csv')
         df_stats.to_csv(csv_file, index=False)
         print(f"[INFO] CSV saved to: {csv_file}")
-    
+
     return results
 
 def compute_3channel_statistics(config, sample_size=None, save_results=True):
@@ -1375,48 +1859,26 @@ if __name__ == "__main__":
         print("\n[INFO] Fast statistics computed.")
     
     
-    # # Test 5-channel implementation
-    # print("[INFO] Testing 5-channel dataset...")
+    # Test 5-channel implementation
+    print("[INFO] Testing 5-channel dataset...")
 
-    # # Create 5-channel dataset
-    # dataset_5ch = GGSL_Dataset_MultiChannel(
-    #     config=config, 
-    #     csv_path=config.DATA_CSV, 
-    #     transforms=get_transform(train=False),
-    #     num_channels= 5
-        
-    # )
-    # # plot the first 5-channel image
-    # sample_img, sample_label = dataset_5ch[4] 
-    # print(f"5-channel sample shape: {sample_img.shape}")
-    # print(f"Sample label: {sample_label}")
-    # plt.figure(figsize=(12, 6))
-    # for i in range(5):
-    #     plt.subplot(1, 5, i + 1)
-    #     plt.imshow(sample_img[i, :, :], cmap='viridis')
-    #     plt.title(f'Channel {i+1}')
-    #     plt.colorbar()  
-    #     plt.axis('off')
-    # plt.tight_layout()
-    # plt.savefig('test.png', dpi=300)
-    # plt.show()
-    # Test 3-channel implementation
-    print("[INFO] Testing 3-channel dataset...")
-
-    # Create 3-channel dataset
-    dataset_3ch = GGSL_Dataset(
+    # Create 5-channel dataset
+    dataset_5ch = GGSL_Dataset_MultiChannel(
         config=config, 
         csv_path=config.DATA_CSV, 
-        transforms=get_transform(train=False),
+        transforms=get_transform(train=True, apply_class_specific_aug=False, angle_aware_augmentation=config.USE_REGRESSION_TARGETS,
+                                 spin2_mode=getattr(config, 'USE_SPIN2_COMPONENTS', False)),
+        num_channels= 5,
+        use_regression_targets=config.USE_REGRESSION_TARGETS
         
     )
-    # plot the first 3-channel image
-    sample_img, sample_label = dataset_3ch[4] 
-    print(f"3-channel sample shape: {sample_img.shape}")
+    # plot the first 5-channel image
+    sample_img, sample_label = dataset_5ch[0] 
+    print(f"5-channel sample shape: {sample_img.shape}")
     print(f"Sample label: {sample_label}")
-    plt.figure(figsize=(9, 3))
-    for i in range(3):
-        plt.subplot(1, 3, i + 1)
+    plt.figure(figsize=(15, 3))
+    for i in range(5):
+        plt.subplot(1, 5, i + 1)
         plt.imshow(sample_img[i, :, :], cmap='viridis')
         plt.title(f'Channel {i+1}')
         plt.colorbar()  
@@ -1425,9 +1887,85 @@ if __name__ == "__main__":
     plt.savefig('test.png', dpi=300)
     plt.show()
     
+    # # Test 3-channel implementation
+    # print("[INFO] Testing 3-channel dataset...")
+
+    # # Create 3-channel dataset
+    # dataset_3ch = GGSL_Dataset(
+    #     config=config, 
+    #     csv_path=config.DATA_CSV, 
+    #     transforms=get_transform(train=False),
+        
+    # )
+    # # plot the first 3-channel image
+    # sample_img, sample_label = dataset_3ch[4] 
+    # print(f"3-channel sample shape: {sample_img.shape}")
+    # print(f"Sample label: {sample_label}")
+    # plt.figure(figsize=(9, 3))
+    # for i in range(3):
+    #     plt.subplot(1, 3, i + 1)
+    #     plt.imshow(sample_img[i, :, :], cmap='viridis')
+    #     plt.title(f'Channel {i+1}')
+    #     plt.colorbar()  
+    #     plt.axis('off')
+    # plt.tight_layout()
+    # plt.savefig('test.png', dpi=300)
+    # plt.show()
     
+
+compute_target_vector_stats = False
+if compute_target_vector_stats == True:
+    print("\n[INFO] Computing target vector statistics...")
+    def compute_target_vector_stats(dataset, num_samples=1000):
+        """
+        Compute per-dimension mean and std of regression target vectors over a sample.
+        Returns (mean: torch.FloatTensor[d], std: torch.FloatTensor[d]).
+        """
+        if num_samples > len(dataset):
+            num_samples = len(dataset)
+        sum_vec = None
+        sumsq_vec = None
+        n = 0
+        for i in range(num_samples):
+            _, target = dataset[i]
+            if not isinstance(target, torch.Tensor):
+                target = torch.as_tensor(target, dtype=torch.float32)
+            target = target.detach().cpu().float().view(-1)
+            if sum_vec is None:
+                d = target.numel()
+                sum_vec = torch.zeros(d, dtype=torch.float32)
+                sumsq_vec = torch.zeros(d, dtype=torch.float32)
+            sum_vec += target
+            sumsq_vec += target * target
+            n += 1
+        mean = sum_vec / max(n, 1)
+        var = sumsq_vec / max(n, 1) - mean * mean
+        std = torch.sqrt(torch.clamp(var, min=1e-12))
+        return mean, std
+
+    dataset_5ch = GGSL_Dataset_MultiChannel(
+        config=config, 
+        csv_path=config.DATA_CSV, 
+        transforms=get_transform(train=False),
+        num_channels= 5,
+        use_regression_targets=config.USE_REGRESSION_TARGETS
+        
+    )
     
-    
+    mean_vec, std_vec = compute_target_vector_stats(dataset_5ch, num_samples=10000)
+    print(f"\n[INFO] Target vector stats over first 100 samples:")
+    print(
+        f"  dims={mean_vec.numel()}, "
+        f"max|mean|={mean_vec.abs().max().item():.4f}, "
+        f"mean|mean|={mean_vec.abs().mean().item():.4f}, "
+        f"mean(std)={std_vec.mean().item():.4f}, "
+        f"min(std)={std_vec.min().item():.4f}, "
+        f"max(std)={std_vec.max().item():.4f}"
+    )
+    print("  mean[0:8] =", mean_vec[:8].numpy().round(4).tolist())
+    print("  std[0:8]  =", std_vec[:8].numpy().round(4).tolist())
+        
+        
 nan_analysis = False
 
 if nan_analysis == True:

@@ -29,7 +29,9 @@ def run_epoch(model: torch.nn.Module,
               dataloader: torch.utils.data.DataLoader,
               optimizer: torch.optim.Optimizer,
               device: torch.device,
-              is_training: bool = False):
+              is_training: bool = False,
+              criterion: torch.nn.Module = None,
+              is_regression: bool = False):
     """Function to run a single training or validation_epoch (depending on
     whether 'is_training' is True or False):
     if is_training==True:
@@ -59,7 +61,9 @@ def run_epoch(model: torch.nn.Module,
     
     # Define the CrossEntropyLoss
     # criterion = nn.CrossEntropyLoss(weight=class_weights)
-    criterion = nn.CrossEntropyLoss()
+   # Select default criterion if not provided
+    if criterion is None:
+        criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
     
     # modes
     if is_training:
@@ -83,6 +87,44 @@ def run_epoch(model: torch.nn.Module,
     loss_tot = 0
     # Loop through DataLoader batches
     for batch, (images, targets) in enumerate(dataloader):
+        # # Images: list/tuple of tensors -> [B, C, H, W]
+        # if isinstance(images, (list, tuple)):
+        #     images = torch.stack([img if isinstance(img, torch.Tensor) else torch.as_tensor(img)
+        #                           for img in images], dim=0)
+        # images = images.to(device).float()
+
+        # # Targets: handle regression vectors vs scalar class labels
+        # if isinstance(targets, (list, tuple)):
+        #     if is_regression:
+        #         # Each target is a vector -> stack to [B, D]
+        #         tgt_list = []
+        #         for t in targets:
+        #             t = torch.as_tensor(t, dtype=torch.float32)
+        #             t = t.view(-1)  # ensure 1D [D]
+        #             tgt_list.append(t)
+        #         targets = torch.stack(tgt_list, dim=0)
+        #     else:
+        #         # Each target should be a scalar class index -> [B]
+        #         tgt_list = []
+        #         for t in targets:
+        #             if isinstance(t, torch.Tensor):
+        #                 if t.dim() == 0:
+        #                     tt = t
+        #                 else:
+        #                     tt = t.reshape(-1)[0]
+        #             else:
+        #                 tt = torch.as_tensor(t)
+        #                 tt = tt.reshape(-1)[0]
+        #             tgt_list.append(tt.to(dtype=torch.long))
+        #         targets = torch.stack(tgt_list, dim=0)
+        # # Final dtypes/devices
+        # targets = targets.to(device)
+        # if is_regression:
+        #     targets = targets.float()
+        #     if targets.dim() == 1:
+        #         targets = targets.unsqueeze(1)  # [B] -> [B, 1]
+        # else:
+        #     targets = targets.long()
         
         images = torch.stack(images)
         images = images.to(device)
@@ -90,6 +132,8 @@ def run_epoch(model: torch.nn.Module,
         
         targets = torch.stack(targets)
         targets = targets.to(device)
+        
+    
         
         # Forward pass
         if is_training:
@@ -173,6 +217,18 @@ def train(model: torch.nn.Module,
     device        = config.DEVICE
     use_scheduler = config.USE_SCHEDULER
     lr            = config.LEARNING_RATE
+    
+     # Toggle: regression vs classification
+    regression_mode = getattr(config, "USE_REGRESSION_TARGETS", False)
+
+    # Choose criterion based on mode (you can switch to SmoothL1Loss if preferred)
+    if regression_mode:
+        criterion = nn.MSELoss()
+    else:
+        # class_weights optional:
+        # class_weights = calculate_class_weights(train_dataloader).to(device)
+        # criterion = nn.CrossEntropyLoss(weight=class_weights)
+        criterion = nn.CrossEntropyLoss()
 
     # Create empty dictionary which will contain all the losses per epoch
     results = {"epoch": [],
@@ -189,7 +245,7 @@ def train(model: torch.nn.Module,
     for epoch in tqdm(range(epochs), desc="Epochs"):
         time_start_epoch = time.time()
         print('\n\n###############################################################')
-        print(f"Epoch: {epoch+1}")
+        print(f"Epoch: {epoch+1}   |  Mode: {'REGRESSION' if regression_mode else 'CLASSIFICATION'}")
         print('###############################################################\n')
         
         # ---- Warm-up unfreeze at the start of the target epoch ----
@@ -302,7 +358,9 @@ def train(model: torch.nn.Module,
                                  dataloader=train_dataloader,
                                  optimizer=optimizer,
                                  device=device,
-                                 is_training=True)
+                                 is_training=True,
+                                 criterion=criterion,
+                                 is_regression=regression_mode)
         
         # -------------------------- Scheduler stepping ------------------------ #
         
@@ -337,7 +395,9 @@ def train(model: torch.nn.Module,
                                          dataloader=valid_dataloader,
                                          optimizer=None,
                                          device=device,
-                                         is_training=False)
+                                         is_training=False,
+                                         criterion=criterion,
+                                         is_regression=regression_mode)
                 
         # If ReduceLROnPlateau, step now with the validation loss
         if use_scheduler and lr_scheduler is not None and sched == "ReduceLROnPlateau":

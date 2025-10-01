@@ -66,9 +66,9 @@ class config:
     ### Set number of classes (our dataset has only two: GGSL and notGGSL)
     NUM_CLASSES = 2
     ### Total number of epochs for the training
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 60
     ### Set batch size
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 1500
     ### Optimizer
     #OPTIMIZER = 'SGD'
     OPTIMIZER = 'AdamW'
@@ -119,6 +119,17 @@ class config:
     ### If True, use the learning rate scheduler during training
     USE_SCHEDULER = True
     NUM_WORKERS = 0 # os.cpu_count()//2
+    USE_REGRESSION_TARGETS = True
+    if USE_REGRESSION_TARGETS:
+        # Use enriched, imputed CSVs for regression:
+        TEST_DATA_CSV  = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_test_lens_wparams_vdisp_imputed.csv'
+        TRAIN_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_train_lens_wparams_vdisp_imputed.csv'
+        VALID_DATA_CSV = '/astrodata/mfogliardi/lsst_challenge/LSST-Lens-Finding-Challenge/src/lensfit/csv/merged_valid_lens_wparams_vdisp_imputed.csv'
+    # Optional: replace (magnitude, PA) pairs for shear and source ellipticity with
+    # spin-2 components (e1 = m cos 2θ, e2 = m sin 2θ). This keeps dimensionality the same
+    # and avoids angle wrap/undefined PA at small magnitudes.
+    USE_SPIN2_COMPONENTS = True
+
     
 
     
